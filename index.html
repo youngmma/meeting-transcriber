@@ -135,7 +135,7 @@ if ('serviceWorker' in navigator) {
       <h2>전사 모델 상태</h2>
       <div class="muted" id="modelStatus">확인 중…</div>
       <div class="progress" id="modelProgWrap" style="display:none"><div id="modelProg"></div></div>
-      <button class="btn btn-primary" id="btnPreload" type="button">고품질 모델 미리 받기 (661MB, 1회)</button>
+      <button class="btn btn-primary" id="btnPreload" type="button">고품질 모델 미리 받기 (661MB, 고사양 PC용)</button>
       <div class="muted" style="margin-top:6px">모델을 받아두면 회의 중 전사가 더 정확하고 빨라집니다.
       받지 않아도 녹음은 바로 시작되고, 가벼운 모델로 전사됩니다.</div>
     </div>
@@ -505,7 +505,7 @@ const Engines = {
     const { pipeline, env } = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.0/dist/transformers.min.js');
     env.cacheKey = 'meeting-transcriber-whisper';
     const prog = (p)=>{ this.onProgress && this.onProgress('whisper', p.file||'', p.loaded||0, p.total||0); };
-    this.whisper = await pipeline('automatic-speech-recognition', 'Xenova/whisper-base.en',
+    this.whisper = await pipeline('automatic-speech-recognition', 'Xenova/whisper-small.en',
       { device:'wasm', dtype:'q8', progress_callback:prog });
     this.whisperReady = true;
     return this.whisper;
@@ -537,14 +537,16 @@ const Engines = {
   /** 한 청크 전사 → {segs:[{start,end,text}] (청크 내 상대 시간), engine} */
   async transcribeChunk(pcm){
     if (this.isSilent(pcm)) return { segs:[], engine:'none' };
-    // primary: parakeet
-    try {
-      const m = await this.ensureParakeet();
-      const r = await m.transcribe(pcm, 16000, { returnTimestamps:true, returnConfidences:true, frameStride:1 });
-      const words = (r.words||[]).filter(w=>w.confidence==null || w.confidence>0.15);
-      return { segs: groupWords(words.map(w=>({start:w.start_time, end:w.end_time, text:w.text}))), engine:'parakeet' };
-    } catch(e){ console.error('parakeet 실패, whisper 폴백:', e); }
-    // fallback: whisper
+    // parakeet(661MB)는 미리 받기에 성공한 고사양 PC에서만 시도. 메모리 부족 PC에서는 탭 crash 나므로 건너뜀
+    if (this.parakeetCached){
+      try {
+        const m = await this.ensureParakeet();
+        const r = await m.transcribe(pcm, 16000, { returnTimestamps:true, returnConfidences:true, frameStride:1 });
+        const words = (r.words||[]).filter(w=>w.confidence==null || w.confidence>0.15);
+        return { segs: groupWords(words.map(w=>({start:w.start_time, end:w.end_time, text:w.text}))), engine:'parakeet' };
+      } catch(e){ console.error('parakeet 실패, whisper 폴백:', e); }
+    }
+    // 주 엔진: whisper-small.en (238MB, 스트리밍 다운로드라 메모리 안전)
     const asr = await this.ensureWhisper();
     const out = await asr(pcm, { chunk_length_s:30, stride_length_s:5,
       language:'english', task:'transcribe', return_timestamps:true });
@@ -950,7 +952,7 @@ async function refreshModelStatus(){
   const el = $('modelStatus');
   const parts = [];
   parts.push('고품질(parakeet): ' + (Engines.parakeetReady||Engines.parakeetCached ? '설치됨 ✓' : '미다운로드'));
-  parts.push('기본(whisper): ' + (Engines.whisperReady||Engines.whisperCached ? '설치됨 ✓' : '미다운로드'));
+  parts.push('기본(whisper-small): ' + (Engines.whisperReady||Engines.whisperCached ? '설치됨 ✓' : '미다운로드'));
   el.innerHTML = parts.map(esc).join('<br>');
   $('engineInfo').innerHTML = parts.map(esc).join('<br>') +
     '<br>WebGPU 없음 → WASM으로 동작합니다.';
@@ -1009,7 +1011,7 @@ async function init(){
     }
     catch(e){
       alert('모델 다운로드 실패: '+(e&&e.message||e));
-      btn.textContent = '고품질 모델 미리 받기 (661MB, 1회)';
+      btn.textContent = '고품질 모델 미리 받기 (661MB, 고사양 PC용)';
       btn.disabled = false;
     }
     $('modelProgWrap').style.display='none';
