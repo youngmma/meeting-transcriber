@@ -137,6 +137,7 @@ if ('serviceWorker' in navigator) {
       ① "녹음 시작" → ② 공유 범위에서 <b>"화면 전체"</b> 선택 → ③ <b>"시스템 오디오 공유" 체크</b> → ④ 공유 → ⑤ 마이크 허용.<br>
       이 공유는 이 브라우저에서 소리를 듣기 위한 것으로, 회의 상대방에게는 공유되거나 알림이 가지 않습니다. Teams를 전체화면으로 띄울 필요는 없습니다 (최소화해도 됩니다).</div>
       <button class="btn btn-primary" id="btnStart" type="button">녹음 시작</button>
+      <div class="muted" id="micOnlyNote" style="display:none;margin-top:8px">이 기기는 화면 공유를 지원하지 않아 마이크로만 녹음됩니다. 회의 소리는 스피커를 통해 마이크에 담기니 볼륨을 키워 두세요.</div>
       <div class="banner err" id="permErr"></div>
     </div>
     <div class="card">
@@ -162,7 +163,7 @@ if ('serviceWorker' in navigator) {
     <div class="banner err" id="trackLostWarn">오디오 입력이 끊겼습니다. 녹음을 다시 시작해 주세요.</div>
     <div class="card">
       <div class="timer" id="elapsed">00:00:00</div>
-      <div class="meter-row"><span class="lab">상대방 소리</span><div class="meter sys"><div id="mSys"></div></div></div>
+      <div class="meter-row" id="sysMeterRow"><span class="lab">상대방 소리</span><div class="meter sys"><div id="mSys"></div></div></div>
       <div class="meter-row"><span class="lab">내 목소리</span><div class="meter"><div id="mMic"></div></div></div>
       <div class="muted" id="txProg" style="margin-top:8px">전사 대기 중…</div>
       <div class="progress" id="saveProgWrap" style="display:none;margin-top:8px"><div id="saveProg"></div></div>
@@ -345,9 +346,14 @@ const AudioCap = {
   chunkIndex:0, onChunk:null, onLevel:null, onTrackLost:null, meterTimer:0, elapsedTimer:0,
 
   async start(){
-    // 1) 시스템 오디오 (상대방)
-    this.displayStream = await navigator.mediaDevices.getDisplayMedia({ video:true, audio:true });
-    const sysTrack = this.displayStream.getAudioTracks()[0] || null;
+    // 1) 시스템 오디오 (상대방) — iPad Safari 등 getDisplayMedia 미지원 기기에서는 생략(마이크 전용)
+    const hasGDM = !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia);
+    if (hasGDM){
+      this.displayStream = await navigator.mediaDevices.getDisplayMedia({ video:true, audio:true });
+    } else {
+      this.displayStream = null;
+    }
+    const sysTrack = (this.displayStream && this.displayStream.getAudioTracks()[0]) || null;
     // 2) 마이크 (본인)
     this.micStream = await navigator.mediaDevices.getUserMedia({ audio:true });
     const micTrack = this.micStream.getAudioTracks()[0];
@@ -378,14 +384,14 @@ const AudioCap = {
 
     // 트랙 끊김 감지
     const lost = ()=>{ this.onTrackLost && this.onTrackLost(); };
-    this.displayStream.getTracks().forEach(t=>{ t.onended=lost; t.onmute=lost; });
+    if (this.displayStream) this.displayStream.getTracks().forEach(t=>{ t.onended=lost; t.onmute=lost; });
     this.micStream.getTracks().forEach(t=>{ t.onended=lost; });
 
     this.recStart = Date.now(); this.chunkIndex = 0;
     this.energy = { mic:[], sys:[] };
     this.startRecorder();
     this.startMeters();
-    return { hasSystemAudio: !!sysTrack };
+    return { hasSystemAudio: !!sysTrack, micOnly: !hasGDM };
   },
 
   /** 부분 실패 시(화면공유 성공 후 마이크 거부 등) 열린 트랙 정리 */
@@ -619,10 +625,10 @@ const App = {
       $('mMic').style.width = Math.min(100, mic*400)+'%';
       $('mSys').style.width = Math.min(100, sys*400)+'%';
       if (mic>0.01 || sys>0.01) this.lastSound = Date.now();
-      // 시스템 오디오 무음 경고 (시작 15초 후부터)
+      // 시스템 오디오 무음 경고 (시작 15초 후부터, 마이크 전용 모드 제외)
       const el = $('sysAudioWarn');
       const elapsed = (Date.now()-AudioCap.recStart)/1000;
-      if (elapsed>15 && !cap.hasSystemAudio) el.classList.add('show'); else el.classList.remove('show');
+      if (elapsed>15 && !cap.hasSystemAudio && !cap.micOnly) el.classList.add('show'); else el.classList.remove('show');
       // 10분 무음 → 깜빡 잊음 알림
       if (!this.silenceWarned && Date.now()-this.lastSound > 10*60*1000){
         this.silenceWarned = true;
@@ -637,6 +643,7 @@ const App = {
     };
 
     showScreen('scr-rec');
+    const smr = $('sysMeterRow'); if (smr) smr.style.display = (cap && cap.micOnly) ? 'none' : '';
     const rl0 = $('recLabel'); if (rl0) rl0.textContent = '녹음 중';
     const rd0 = $('recDot'); if (rd0){ rd0.style.animation=''; rd0.style.background=''; }
     const spw0 = $('saveProgWrap'); if (spw0) spw0.style.display='none';
@@ -1020,6 +1027,9 @@ async function refreshModelStatus(){
 async function init(){
   // 화면 전환
   $('brandHome').onclick = ()=>showScreen('scr-start');
+  if (!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia)){
+    const mn = $('micOnlyNote'); if (mn) mn.style.display='block';
+  }
   $('navList').onclick = ()=>{ showScreen('scr-list'); renderList(); };
   $('navSettings').onclick = ()=>showScreen('scr-settings');
   $('btnBack').onclick = ()=>{ showScreen('scr-list'); renderList(); };
