@@ -497,7 +497,9 @@ const Engines = {
     if (!this.parakeetCached){ try{ this.parakeetCached = localStorage.getItem('mt_model_parakeet')==='1'; }catch(_){} }
     try{
       const c = await caches.open('meeting-transcriber-whisper');
-      this.whisperCached = (await c.keys()).length>0;
+      const keys = await c.keys();
+      // 다국어 모델(Xenova/whisper-small) 기준. 영어 전용(.en) 캐시는 제외
+      this.whisperCached = keys.some(k=>k.url.includes('/Xenova/whisper-small/') && !k.url.includes('whisper-small.en'));
     }catch(_){ this.whisperCached = false; }
   },
 
@@ -520,7 +522,7 @@ const Engines = {
     const { pipeline, env } = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.0/dist/transformers.min.js');
     env.cacheKey = 'meeting-transcriber-whisper';
     const prog = (p)=>{ this.onProgress && this.onProgress('whisper', p.file||'', p.loaded||0, p.total||0); };
-    this.whisper = await pipeline('automatic-speech-recognition', 'Xenova/whisper-small.en',
+    this.whisper = await pipeline('automatic-speech-recognition', 'Xenova/whisper-small',
       { device:'wasm', dtype:'q8', progress_callback:prog });
     this.whisperReady = true;
     return this.whisper;
@@ -561,10 +563,10 @@ const Engines = {
         return { segs: groupWords(words.map(w=>({start:w.start_time, end:w.end_time, text:w.text}))), engine:'parakeet' };
       } catch(e){ console.error('parakeet 실패, whisper 폴백:', e); }
     }
-    // 주 엔진: whisper-small.en (238MB, 스트리밍 다운로드라 메모리 안전)
+    // 주 엔진: whisper-small 다국어 (약 250MB, 스트리밍 다운로드라 메모리 안전). 언어 자동 감지
     const asr = await this.ensureWhisper();
     const out = await asr(pcm, { chunk_length_s:30, stride_length_s:5,
-      language:'english', task:'transcribe', return_timestamps:true });
+      task:'transcribe', return_timestamps:true });
     const segs = (out.chunks||[]).map(c=>({ start:c.timestamp[0], end:c.timestamp[1], text:c.text }));
     return { segs: filterHallucinations(segs), engine:'whisper' };
   }
