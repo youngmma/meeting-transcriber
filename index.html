@@ -213,7 +213,7 @@ if ('serviceWorker' in navigator) {
 <script type="importmap">
 { "imports": {
   "parakeet.js": "https://cdn.jsdelivr.net/npm/parakeet.js@1.4.4/src/index.js",
-  "onnxruntime-web": "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.1/dist/ort.web.min.js"
+  "onnxruntime-web": "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.1/dist/ort.min.mjs"
 } }
 </script>
 <script type="module">
@@ -438,7 +438,53 @@ const AudioCap = {
 /* ============ 전사 엔진 ============ */
 const Engines = {
   parakeet:null, whisper:null, parakeetReady:false, whisperReady:false,
+  parakeetCached:false, whisperCached:false, // 파일 캐시됨(설치됨). 세션은 전사 시점에 생성
   onProgress:null, // (engine, file, loaded, total) => void
+
+  /** 미리 받기: 파일 다운로드+IndexedDB 캐시만. ORT 세션은 만들지 않음 (메모리 절약, crash 방지) */
+  async preloadParakeet(){
+    if (this.parakeetCached) return true;
+    const { getParakeetModel } = await import('parakeet.js');
+    const perFile = {};
+    const prog = (p)=>{
+      perFile[p.file] = p;
+      let l=0,t=0;
+      for (const k in perFile){ l+=perFile[k].loaded||0; t+=perFile[k].total||0; }
+      this.onProgress && this.onProgress('parakeet', '전체', l, t);
+    };
+    const result = await getParakeetModel('parakeet-tdt-0.6b-v2', {
+      backend:'wasm', cpuThreads:4, encoderQuant:'int8', decoderQuant:'int8',
+      preprocessor:'nemo128', progress:prog,
+    });
+    // blob URL 해제 → 메모리 반환 (파일은 IndexedDB에 보관됨)
+    if (result && result.urls) for (const k in result.urls){ try{ URL.revokeObjectURL(result.urls[k]); }catch(_){} }
+    this.parakeetCached = true;
+    try{ localStorage.setItem('mt_model_parakeet','1'); }catch(_){}
+    return true;
+  },
+
+  /** 시작 시 캐시 검사: 이전에 받아둔 모델이 있으면 '설치됨'으로 표시 */
+  async checkCache(){
+    try{
+      const db = await new Promise((res,rej)=>{
+        const r = indexedDB.open('parakeet-cache-db', 1);
+        r.onsuccess = ()=>res(r.result); r.onerror = rej;
+      });
+      const keys = await new Promise((res,rej)=>{
+        const tx = db.transaction(['file-store'],'readonly');
+        const r = tx.objectStore('file-store').getAllKeys();
+        r.onsuccess = ()=>res(r.result||[]); r.onerror = rej;
+      });
+      db.close();
+      const need = ['encoder-model.int8.onnx','decoder_joint-model.int8.onnx','vocab.txt'];
+      this.parakeetCached = need.every(f=>keys.some(k=>String(k).endsWith(f)));
+    }catch(_){ this.parakeetCached = false; }
+    if (!this.parakeetCached){ try{ this.parakeetCached = localStorage.getItem('mt_model_parakeet')==='1'; }catch(_){} }
+    try{
+      const c = await caches.open('meeting-transcriber-whisper');
+      this.whisperCached = (await c.keys()).length>0;
+    }catch(_){ this.whisperCached = false; }
+  },
 
   async ensureParakeet(){
     if (this.parakeetReady) return this.parakeet;
@@ -448,8 +494,9 @@ const Engines = {
       backend:'wasm', cpuThreads:4, encoderQuant:'int8', decoderQuant:'int8',
       preprocessor:'nemo128', progress:prog,
     });
-    await this.parakeet.transcribe(new Float32Array(16000), 16000); // warm-up
     this.parakeetReady = true;
+    this.parakeetCached = true;
+    try{ localStorage.setItem('mt_model_parakeet','1'); }catch(_){}
     return this.parakeet;
   },
 
@@ -902,13 +949,13 @@ function txtOf(t){
 async function refreshModelStatus(){
   const el = $('modelStatus');
   const parts = [];
-  parts.push('고품질(parakeet): ' + (Engines.parakeetReady ? '준비됨' : '미다운로드'));
-  parts.push('기본(whisper): ' + (Engines.whisperReady ? '준비됨' : '미다운로드'));
+  parts.push('고품질(parakeet): ' + (Engines.parakeetReady||Engines.parakeetCached ? '설치됨 ✓' : '미다운로드'));
+  parts.push('기본(whisper): ' + (Engines.whisperReady||Engines.whisperCached ? '설치됨 ✓' : '미다운로드'));
   el.innerHTML = parts.map(esc).join('<br>');
   $('engineInfo').innerHTML = parts.map(esc).join('<br>') +
     '<br>WebGPU 없음 → WASM으로 동작합니다.';
   const bp = $('btnPreload');
-  if (bp && Engines.parakeetReady){ bp.textContent = '고품질 모델 준비됨 ✓'; bp.disabled = true; }
+  if (bp && (Engines.parakeetReady||Engines.parakeetCached)){ bp.textContent = '고품질 모델 설치됨 ✓'; bp.disabled = true; }
 }
 
 async function init(){
@@ -950,21 +997,27 @@ async function init(){
   };
   $('btnPreload').onclick = async ()=>{
     const btn = $('btnPreload');
-    if (Engines.parakeetReady) return;
+    if (Engines.parakeetReady||Engines.parakeetCached) return;
     btn.disabled = true;
     btn.textContent = '모델 준비 중…';
     // 클릭 즉시 피드백: 엔진 로딩 단계에서는 파일 진행률이 없어 바로 표시
     $('modelProgWrap').style.display='block';
-    $('modelStatus').textContent = '엔진 로딩 중… (첫 단계는 시간이 걸릴 수 있습니다)';
-    try { await Engines.ensureParakeet(); }
-    catch(e){ alert('모델 다운로드 실패: '+(e&&e.message||e)); }
-    btn.textContent = Engines.parakeetReady ? '고품질 모델 준비됨 ✓' : '고품질 모델 미리 받기 (661MB, 1회)';
-    btn.disabled = Engines.parakeetReady ? true : false;
+    $('modelStatus').textContent = '엔진 로딩 중… (첫 단계는 시간이 걸릴 수 있습니다. 탭을 닫지 마세요)';
+    try {
+      await Engines.preloadParakeet(); // 다운로드+캐시만, 세션은 만들지 않음
+      btn.textContent = '고품질 모델 설치됨 ✓';
+    }
+    catch(e){
+      alert('모델 다운로드 실패: '+(e&&e.message||e));
+      btn.textContent = '고품질 모델 미리 받기 (661MB, 1회)';
+      btn.disabled = false;
+    }
     $('modelProgWrap').style.display='none';
     refreshModelStatus();
   };
 
   await App.sweepRetention();
+  await Engines.checkCache(); // 이전에 받아둔 모델이 있으면 '설치됨' 표시
   await refreshModelStatus();
   await App.checkRecovery();
   // 저장소 유지 요청 (eviction 방지)
