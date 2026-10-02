@@ -210,7 +210,13 @@ if ('serviceWorker' in navigator) {
     </div>
     <div class="card">
       <h2>전사 엔진</h2>
-      <div class="muted" id="engineInfo">-</div>
+      <label class="lbl" for="whisperModel">전사 모델</label>
+      <select id="whisperModel">
+        <option value="Xenova/whisper-small" selected>표준 (정확함, whisper-small)</option>
+        <option value="Xenova/whisper-base">빠름 (2~3배 빠름, 정확도 낮음)</option>
+      </select>
+      <div class="muted" style="margin-top:6px">둘 다 한국어·영어 자동 감지. 빠름 모드는 긴 녹음 전사 시간을 줄이고 싶을 때 사용하세요.</div>
+      <div class="muted" id="engineInfo" style="margin-top:8px">-</div>
     </div>
     <div class="card">
       <h2>진단</h2>
@@ -265,6 +271,31 @@ function filterHallucinations(segs){
     out.push(g);
   }
   return out;
+}
+/** "two types of two types of…" 같은 연속 반복 구를 1회로 붕괴.
+ *  짧은 단위(1~2단어)는 3회 이상, 긴 단위는 2회 이상 연속될 때만 붕괴
+ *  ("very very good" 같은 정상 강조는 유지) */
+function collapseRepeats(text){
+  const w = String(text||'').split(/\s+/).filter(Boolean);
+  if (w.length < 4) return w.join(' ');
+  const out = [];
+  let i = 0;
+  while (i < w.length){
+    let bestLen = 0, bestRep = 1;
+    for (let len=1; len<=8 && i+len*2<=w.length; len++){
+      const unit = w.slice(i, i+len).join(' ');
+      const unitL = unit.toLowerCase();
+      let rep = 1;
+      while (w.slice(i+rep*len, i+(rep+1)*len).join(' ').toLowerCase() === unitL) rep++;
+      const need = len<=2 ? 3 : 2;
+      if (rep>=need && (bestLen===0 || len<bestLen)){ bestLen=len; bestRep=rep; }
+    }
+    if (bestRep>=2 && bestLen>0){
+      out.push(w.slice(i, i+bestLen).join(' '));
+      i += bestLen*bestRep;
+    } else { out.push(w[i]); i++; }
+  }
+  return out.join(' ');
 }
 function avgRms(ws,s,e){ let sm=0,n=0;
   for (const w of ws){ const a=Math.max(w.start,s), b=Math.min(w.end,e);
@@ -498,8 +529,9 @@ const Engines = {
     try{
       const c = await caches.open('meeting-transcriber-whisper');
       const keys = await c.keys();
-      // 다국어 모델(Xenova/whisper-small) 기준. 영어 전용(.en) 캐시는 제외
-      this.whisperCached = keys.some(k=>k.url.includes('/Xenova/whisper-small/') && !k.url.includes('whisper-small.en'));
+      // 선택된 다국어 모델 기준. 영어 전용(.en) 캐시는 제외
+      const mid = this.whisperModel || 'Xenova/whisper-small';
+      this.whisperCached = keys.some(k=>k.url.includes('/'+mid+'/') && !k.url.includes('.en/'));
     }catch(_){ this.whisperCached = false; }
   },
 
@@ -517,12 +549,74 @@ const Engines = {
     return this.parakeet;
   },
 
-  async ensureWhisper(){
+  whisperModel:'Xenova/whisper-small', // 설정에서 변경 (whisper-base=빠름)
+  _worker:null, _workerReady:null, _txSeq:0,
+
+  /** Whisper 워커 준비 (모델 로드 포함). 실패하면 null → 메인스레드 폴백 */
+  ensureWhisperWorker(){
+    if (this._workerReady) return this._workerReady;
+    this._workerReady = (async ()=>{
+      const model = this.whisperModel;
+      let w;
+      try { w = new Worker('whisper-worker.js', { type:'module' }); }
+      catch(e){ console.warn('워커 생성 실패, 메인스레드 폴백:', e); return null; }
+      this._worker = w;
+      const ready = new Promise((res, rej)=>{
+        const to = setTimeout(()=>rej(new Error('워커 초기화 시간 초과')), 180000);
+        const h = (e)=>{
+          const m = e.data||{};
+          if (m.type==='ready'){ clearTimeout(to); w.removeEventListener('message',h); w.removeEventListener('error',herr); res(w); }
+          else if (m.type==='error' && !m.id){ clearTimeout(to); w.removeEventListener('message',h); w.removeEventListener('error',herr); rej(new Error(m.message)); }
+          else if (m.type==='modelProgress'){ this.onProgress && this.onProgress('whisper', m.file, m.loaded, m.total); }
+        };
+        // 워커 스크립트 자체가 로드 실패하면(방화벽 등) message가 절대 안 오므로 error 이벤트로 즉시 감지
+        const herr = ()=>{ clearTimeout(to); w.removeEventListener('message',h); w.removeEventListener('error',herr); rej(new Error('워커 스크립트 로드 실패')); };
+        w.addEventListener('message', h);
+        w.addEventListener('error', herr);
+      });
+      w.postMessage({ type:'init', model });
+      try { return await ready; }
+      catch(e){ console.warn('워커 초기화 실패, 메인스레드 폴백:', e);
+        try{ w.terminate(); }catch(_){} this._worker=null; return null; }
+    })();
+    return this._workerReady;
+  },
+
+  /** 모델 변경 시 워커 리셋 (다음 전사에서 새 모델로 로드) */
+  resetWhisperWorker(){
+    try{ this._worker && this._worker.terminate(); }catch(_){}
+    this._worker=null; this._workerReady=null; this.whisperReady=false; this.whisper=null;
+  },
+
+  /** 30초 이하 PCM 윈도우 하나를 워커(또는 폴백)에서 전사 → 타임스탬프 청크 배열 */
+  async transcribeWindow(pcm){
+    const w = await this.ensureWhisperWorker();
+    if (w){
+      const id = ++this._txSeq;
+      return new Promise((res, rej)=>{
+        const h = (e)=>{
+          const m = e.data||{};
+          if (m.id!==id) return;
+          if (m.type==='done'){ w.removeEventListener('message',h); res(m.chunks||[]); }
+          else if (m.type==='error'){ w.removeEventListener('message',h); rej(new Error(m.message)); }
+        };
+        w.addEventListener('message', h);
+        w.postMessage({ type:'transcribe', id, pcm }, [pcm.buffer]);
+      });
+    }
+    // 폴백: 메인스레드 (구형 브라우저)
+    const asr = await this.ensureWhisperMain();
+    const out = await asr(pcm, { task:'transcribe', return_timestamps:true,
+      chunk_length_s:30, stride_length_s:0, no_repeat_ngram_size:3, max_new_tokens:224 });
+    return out.chunks||[];
+  },
+
+  async ensureWhisperMain(){
     if (this.whisperReady) return this.whisper;
     const { pipeline, env } = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.0/dist/transformers.min.js');
     env.cacheKey = 'meeting-transcriber-whisper';
     const prog = (p)=>{ this.onProgress && this.onProgress('whisper', p.file||'', p.loaded||0, p.total||0); };
-    this.whisper = await pipeline('automatic-speech-recognition', 'Xenova/whisper-small',
+    this.whisper = await pipeline('automatic-speech-recognition', this.whisperModel,
       { device:'wasm', dtype:'q8', progress_callback:prog });
     this.whisperReady = true;
     return this.whisper;
@@ -551,8 +645,9 @@ const Engines = {
     return Math.sqrt(s/(n/7)) < th;
   },
 
-  /** 한 청크 전사 → {segs:[{start,end,text}] (청크 내 상대 시간), engine} */
-  async transcribeChunk(pcm){
+  /** 한 청크 전사 → {segs:[{start,end,text}] (청크 내 상대 시간), engine}.
+   *  onWin(done,total): 30초 구간 단위 진행률 콜백 */
+  async transcribeChunk(pcm, onWin){
     if (this.isSilent(pcm)) return { segs:[], engine:'none' };
     // parakeet(661MB)는 미리 받기에 성공한 고사양 PC에서만 시도. 메모리 부족 PC에서는 탭 crash 나므로 건너뜀
     if (this.parakeetCached){
@@ -560,17 +655,35 @@ const Engines = {
         const m = await this.ensureParakeet();
         const r = await m.transcribe(pcm, 16000, { returnTimestamps:true, returnConfidences:true, frameStride:1 });
         const words = (r.words||[]).filter(w=>w.confidence==null || w.confidence>0.15);
+        onWin && onWin(1,1);
         return { segs: groupWords(words.map(w=>({start:w.start_time, end:w.end_time, text:w.text}))), engine:'parakeet' };
       } catch(e){ console.error('parakeet 실패, whisper 폴백:', e); }
     }
-    // 주 엔진: whisper-small 다국어 (약 250MB, 스트리밍 다운로드라 메모리 안전). 언어 자동 감지
-    const asr = await this.ensureWhisper();
-    const out = await asr(pcm, { chunk_length_s:30, stride_length_s:5,
-      task:'transcribe', return_timestamps:true });
-    const segs = (out.chunks||[]).map(c=>({ start:c.timestamp[0], end:c.timestamp[1], text:c.text }));
+    // whisper: 30초 윈도우로 직접 분할 → 구간 단위 진행률 + 워커 추론(페이지 멈춤 방지)
+    // 반복 환각은 워커의 no_repeat_ngram_size + 여기서 collapseRepeats로 이중 차단
+    const SR=16000, WIN=30*SR, STEP=25*SR, OVERLAP=5;
+    const starts=[];
+    for (let s=0; s<pcm.length; s+=STEP) starts.push(s);
+    const segs=[];
+    for (let i=0;i<starts.length;i++){
+      const s=starts[i];
+      const wpcm=pcm.slice(s, Math.min(s+WIN, pcm.length));
+      const chunks=await this.transcribeWindow(wpcm);
+      const trim=i===0?0:OVERLAP; // 이전 윈도우와 겹치는 5초는 버림 (중복 방지)
+      for (const c of chunks){
+        const cs=c.timestamp[0], ce=c.timestamp[1];
+        if (!(ce>trim)) continue;
+        const text=collapseRepeats((c.text||'').trim());
+        if (!text) continue;
+        segs.push({ start:s/SR+Math.max(cs,trim), end:s/SR+ce, text });
+      }
+      onWin && onWin(i+1, starts.length);
+    }
     return { segs: filterHallucinations(segs), engine:'whisper' };
   }
 };
+// E2E 테스트 훅 (읽기 전용 노출, 민감정보 없음)
+window.Engines = Engines;
 
 /** 단어들을 세그먼트로 묶기 (문장부호/12초/25단어 기준) */
 function groupWords(words){
@@ -685,16 +798,20 @@ const App = {
 
   updateTxProg(){
     if (!this.meeting) return;
+    const w = this.txWin; // {d, t} 현재 청크의 30초 구간 진행률
+    const winTxt = (w && w.t>1) ? ` · 구간 ${w.d}/${w.t}` : '';
     const txt = this.meeting.chunksDone >= this.meeting.chunksTotal && this.meeting.chunksTotal>0
       ? `전사 완료 (${this.meeting.chunksTotal} 청크)`
-      : `전사 중… ${this.meeting.chunksDone}/${this.meeting.chunksTotal} 청크`;
+      : `전사 중… ${this.meeting.chunksDone}/${this.meeting.chunksTotal} 청크${winTxt}`;
     const tp = $('txProg'); if (tp) tp.textContent = txt;
     const ri = $('recoveryInfo');
     if (ri && $('recoveryCard') && $('recoveryCard').style.display!=='none') ri.textContent = txt;
-    // 저장 중 프로그레스 바
+    // 저장 중 프로그레스 바 (구간 단위까지 반영)
     const spw = $('saveProgWrap'), sp = $('saveProg');
-    if (sp && spw && spw.style.display!=='none' && this.meeting.chunksTotal>0)
-      sp.style.width = Math.round(this.meeting.chunksDone/this.meeting.chunksTotal*100)+'%';
+    if (sp && spw && spw.style.display!=='none' && this.meeting.chunksTotal>0){
+      const frac = (w && w.t>0) ? w.d/w.t : 0;
+      sp.style.width = Math.min(100, Math.round((this.meeting.chunksDone+frac)/this.meeting.chunksTotal*100))+'%';
+    }
   },
 
   async pumpQueue(){
@@ -717,7 +834,11 @@ const App = {
     try {
       const pcm = await Engines.resample16k(rec.blob);
       const offset = chunkIndex * CHUNK_SEC;
-      const { segs, engine } = await Engines.transcribeChunk(pcm);
+      this.txWin = null;
+      const { segs, engine } = await Engines.transcribeChunk(pcm, (d,t)=>{
+        this.txWin = { d, t }; this.updateTxProg();
+      });
+      this.txWin = null;
       // 절대 시간으로 변환 + 화자 판정 (세션 에너지 사용)
       const cp = await get('checkpoints', meetingId);
       const abs = segs.map(s=>({ start:s.start+offset, end:s.end+offset, text:s.text }));
@@ -1018,7 +1139,8 @@ async function refreshModelStatus(){
   const el = $('modelStatus');
   const parts = [];
   parts.push('고품질(parakeet): ' + (Engines.parakeetReady||Engines.parakeetCached ? '설치됨 ✓' : '미다운로드'));
-  parts.push('기본(whisper-small): ' + (Engines.whisperReady||Engines.whisperCached ? '설치됨 ✓' : '미다운로드'));
+  const wname = (Engines.whisperModel||'').split('/').pop() || 'whisper-small';
+  parts.push(`기본(${wname}): ` + (Engines.whisperReady||Engines.whisperCached ? '설치됨 ✓' : '미다운로드'));
   el.innerHTML = parts.map(esc).join('<br>');
   $('engineInfo').innerHTML = parts.map(esc).join('<br>') +
     '<br>WebGPU 없음 → WASM으로 동작합니다.';
@@ -1054,6 +1176,16 @@ async function init(){
   $('audioPolicy').value = st ? st.v : '3days';
   $('audioPolicy').onchange = async e=>{
     await put('settings',{k:'audioPolicy', v:e.target.value});
+  };
+  const wm = await get('settings','whisperModel');
+  Engines.whisperModel = (wm && wm.v) || 'Xenova/whisper-small';
+  $('whisperModel').value = Engines.whisperModel;
+  $('whisperModel').onchange = async e=>{
+    Engines.whisperModel = e.target.value;
+    await put('settings',{k:'whisperModel', v:e.target.value});
+    Engines.resetWhisperWorker(); // 다음 전사부터 새 모델로 로드
+    await Engines.checkCache();
+    await refreshModelStatus();
   };
   $('btnWipe').onclick = async ()=>{
     if (!confirm('정말 모든 데이터를 삭제할까요? 되돌릴 수 없습니다.')) return;
