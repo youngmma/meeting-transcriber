@@ -1,0 +1,896 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>미팅 전사</title>
+<meta name="description" content="회사 회의를 녹음하고 브라우저 안에서 전사하는 개인용 도구. 오디오는 기기를 떠나지 않습니다.">
+<meta name="theme-color" content="#1f3a5f">
+<link rel="manifest" href="./manifest.json">
+<link rel="icon" type="image/svg+xml" href="./icons/icon.svg">
+<style>
+:root{
+  --navy:#1f3a5f; --navy-dark:#152a45; --accent:#2f7cf6; --accent-dark:#1f63d8;
+  --bg:#f4f6f9; --surface:#ffffff; --text:#1c2430; --muted:#66707e;
+  --border:#dfe5ec; --danger:#d64545; --danger-dark:#b23333;
+  --ok:#1e9e6a; --warn:#b7791f; --radius:12px;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0; font-family:'Pretendard','Noto Sans KR',-apple-system,'Segoe UI','Malgun Gothic',sans-serif;
+  background:var(--bg); color:var(--text); line-height:1.6; font-size:16px;
+}
+header.top{
+  position:sticky; top:0; z-index:10; background:var(--navy); color:#fff;
+  padding:12px 16px; display:flex; align-items:center; gap:10px;
+}
+header.top h1{font-size:18px; margin:0; font-weight:700; letter-spacing:0}
+header.top .spacer{flex:1}
+.icon-btn{background:transparent;border:1px solid rgba(255,255,255,.35);color:#fff;
+  border-radius:8px; padding:6px 12px; font-size:14px; cursor:pointer}
+.icon-btn:active{background:rgba(255,255,255,.15)}
+main{max-width:720px; margin:0 auto; padding:16px 16px 96px}
+.screen{display:none}
+.screen.active{display:block; animation:fadein .18s ease}
+@keyframes fadein{from{opacity:0; transform:translateY(4px)} to{opacity:1; transform:none}}
+.card{background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+  padding:16px; margin-bottom:12px}
+.card h2{font-size:16px; margin:0 0 8px}
+.muted{color:var(--muted); font-size:14px}
+.btn{display:block; width:100%; border:none; border-radius:var(--radius); cursor:pointer;
+  font-size:17px; font-weight:700; padding:15px; margin:8px 0; font-family:inherit}
+.btn-primary{background:var(--accent); color:#fff}
+.btn-primary:active{background:var(--accent-dark)}
+.btn-danger{background:var(--danger); color:#fff; font-size:19px; padding:18px}
+.btn-danger:active{background:var(--danger-dark)}
+.btn-ghost{background:var(--surface); color:var(--text); border:1px solid var(--border); font-weight:600}
+.btn-small{width:auto; display:inline-block; padding:8px 14px; font-size:14px; margin:4px 4px 4px 0}
+input[type=text], input[type=search], select{
+  width:100%; font-size:16px; padding:12px; border:1px solid var(--border);
+  border-radius:10px; font-family:inherit; background:#fff; color:var(--text)}
+label.lbl{display:block; font-size:14px; font-weight:700; margin:12px 0 6px}
+.rec-indicator{display:flex; align-items:center; gap:8px; background:var(--navy-dark); color:#fff;
+  border-radius:var(--radius); padding:12px 16px; margin-bottom:12px; font-weight:700}
+.rec-dot{width:12px; height:12px; border-radius:50%; background:#ff4d4d; animation:blink 1.2s infinite}
+@keyframes blink{0%,100%{opacity:1} 50%{opacity:.25}}
+.timer{font-size:44px; font-weight:800; text-align:center; margin:8px 0; font-variant-numeric:tabular-nums}
+.meter-row{display:flex; align-items:center; gap:10px; margin:8px 0}
+.meter-row .lab{width:88px; font-size:13px; color:var(--muted); flex-shrink:0}
+.meter{flex:1; height:14px; background:#e8edf3; border-radius:7px; overflow:hidden}
+.meter > div{height:100%; width:0%; background:var(--ok); transition:width .12s linear}
+.meter.sys > div{background:var(--accent)}
+.banner{border-radius:10px; padding:12px 14px; font-size:14px; margin:10px 0; display:none}
+.banner.show{display:block}
+.banner.warn{background:#fdf3e0; border:1px solid #ecd9a8; color:#7a5a12}
+.banner.err{background:#fdecec; border:1px solid #f3c1c1; color:#8f2424}
+.banner.info{background:#e9f1fd; border:1px solid #bcd4f5; color:#1d4fa1}
+.progress{height:10px; background:#e8edf3; border-radius:5px; overflow:hidden; margin:8px 0}
+.progress > div{height:100%; width:0%; background:var(--accent); transition:width .2s}
+.meet-item{display:flex; align-items:center; gap:10px; padding:12px 4px; border-bottom:1px solid var(--border)}
+.meet-item:last-child{border-bottom:none}
+.meet-item .t{flex:1; min-width:0}
+.meet-item .t .title{font-weight:700; font-size:15px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.meet-item .t .sub{font-size:12px; color:var(--muted)}
+.seg{padding:10px 4px; border-bottom:1px solid var(--border); line-height:1.7}
+.seg:last-child{border-bottom:none}
+.seg .spk{font-size:12px; font-weight:700; border-radius:6px; padding:2px 8px; margin-right:6px}
+.seg .spk.me{background:#e9f1fd; color:#1d4fa1}
+.seg .spk.them{background:#eef2f6; color:#475569}
+.seg .spk.unk{background:#f3e8e8; color:#8f5a5a}
+.seg .ts{font-size:12px; color:var(--muted); cursor:pointer; text-decoration:underline;
+  text-underline-offset:2px; background:none; border:none; padding:0; font-family:inherit}
+.seg .ts:disabled{color:#b6bdc7; text-decoration:none; cursor:default}
+.seg .ts:not(:disabled):active{color:var(--accent)}
+.kbd-note{font-size:13px; color:var(--muted); background:var(--surface); border:1px dashed var(--border);
+  border-radius:10px; padding:10px 12px; margin:10px 0}
+footer.foot{max-width:720px; margin:0 auto; padding:0 16px 32px; color:var(--muted); font-size:12px}
+@media (max-width:480px){
+  .timer{font-size:36px}
+  .btn-danger{font-size:17px}
+}
+</style>
+<meta name="theme-color" content="#1a73e8">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="manifest" href="./manifest.json">
+<link rel="icon" type="image/svg+xml" href="./icons/icon.svg">
+<link rel="apple-touch-icon" href="./icons/icon.svg">
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function () {
+    navigator.serviceWorker.register('./sw.js').catch(function (e) {
+      console.warn('서비스 워커 등록 실패:', e);
+    });
+  });
+}
+</script>
+</head>
+<body>
+<header class="top">
+  <h1>미팅 전사</h1>
+  <div class="spacer"></div>
+  <button class="icon-btn" id="navList" type="button">목록</button>
+  <button class="icon-btn" id="navSettings" type="button">설정</button>
+</header>
+<main>
+  <!-- 시작 화면 -->
+  <section class="screen active" id="scr-start">
+    <div class="card">
+      <h2>새 회의 녹음</h2>
+      <label class="lbl" for="topicInput">주제 (선택)</label>
+      <input type="text" id="topicInput" placeholder="예: 주간팀미팅" maxlength="50" autocomplete="off">
+      <div class="kbd-note">매번 직접 시작해야 합니다 (브라우저 보안 정책상 자동 녹음 불가).
+      시작하면 화면 공유 선택에서 <b>오디오 공유</b>를 꼭 켜세요.</div>
+      <button class="btn btn-primary" id="btnStart" type="button">녹음 시작</button>
+      <div class="banner err" id="permErr"></div>
+    </div>
+    <div class="card">
+      <h2>전사 모델 상태</h2>
+      <div class="muted" id="modelStatus">확인 중…</div>
+      <div class="progress" id="modelProgWrap" style="display:none"><div id="modelProg"></div></div>
+      <button class="btn btn-ghost btn-small" id="btnPreload" type="button">고품질 모델 미리 받기 (661MB, 1회)</button>
+      <div class="muted" style="margin-top:6px">모델을 받아두면 회의 중 전사가 더 정확하고 빨라집니다.
+      받지 않아도 녹음은 바로 시작되고, 가벼운 모델로 전사됩니다.</div>
+    </div>
+    <div class="card">
+      <h2>알아두기</h2>
+      <div class="muted">- 오디오는 이 기기를 떠나지 않습니다. 전사도 여기서 합니다.<br>
+      - 전사본은 브라우저에 저장됩니다. 회사 정책으로 삭제될 수 있으니 중요한 회의는 파일로 다운로드하세요.<br>
+      - 녹음 중에는 이 탭을 닫지 마세요.</div>
+    </div>
+  </section>
+
+  <!-- 녹음 중 화면 -->
+  <section class="screen" id="scr-rec">
+    <div class="rec-indicator"><span class="rec-dot"></span><span>녹음 중</span><span class="spacer" style="flex:1"></span><span id="recClock">00:00</span></div>
+    <div class="banner warn" id="sysAudioWarn">상대방 소리가 안 들어옵니다. 화면 공유 선택 시 <b>오디오 공유</b>를 켜셨는지 확인하세요.</div>
+    <div class="banner err" id="trackLostWarn">오디오 입력이 끊겼습니다. 녹음을 다시 시작해 주세요.</div>
+    <div class="card">
+      <div class="timer" id="elapsed">00:00:00</div>
+      <div class="meter-row"><span class="lab">상대방 소리</span><div class="meter sys"><div id="mSys"></div></div></div>
+      <div class="meter-row"><span class="lab">내 목소리</span><div class="meter"><div id="mMic"></div></div></div>
+      <div class="muted" id="txProg" style="margin-top:8px">전사 대기 중…</div>
+    </div>
+    <button class="btn btn-danger" id="btnStop" type="button">중지하고 저장</button>
+  </section>
+
+  <!-- 목록 화면 -->
+  <section class="screen" id="scr-list">
+    <div class="card">
+      <div class="muted" style="margin-bottom:8px">브라우저 데이터는 회사 정책으로 삭제될 수 있습니다. 중요한 회의는 파일로 다운로드하세요.</div>
+      <input type="search" id="searchInput" placeholder="전사본 검색 (키워드)" autocomplete="off">
+    </div>
+    <div class="card" id="meetList"><div class="muted">불러오는 중…</div></div>
+  </section>
+
+  <!-- 읽기 화면 -->
+  <section class="screen" id="scr-read">
+    <div class="card">
+      <h2 id="readTitle" style="font-size:17px"></h2>
+      <div class="muted" id="readMeta"></div>
+      <div style="margin-top:8px">
+        <button class="btn btn-ghost btn-small" id="btnDlTxt" type="button">txt 다운로드</button>
+        <button class="btn btn-ghost btn-small" id="btnDlSrt" type="button">srt 다운로드</button>
+        <button class="btn btn-ghost btn-small" id="btnBack" type="button">목록으로</button>
+      </div>
+    </div>
+    <div class="card" id="segList"></div>
+  </section>
+
+  <!-- 설정 화면 -->
+  <section class="screen" id="scr-settings">
+    <div class="card">
+      <h2>오디오 보관</h2>
+      <label class="lbl" for="audioPolicy">녹음본 보관 정책</label>
+      <select id="audioPolicy">
+        <option value="immediate">전사 완료 후 즉시 폐기</option>
+        <option value="7days" selected>7일 후 자동 폐기</option>
+        <option value="keep">영구 보관</option>
+      </select>
+      <div class="muted" style="margin-top:6px">전사본은 항상 보관됩니다. 녹음본만 이 정책으로 정리됩니다.</div>
+    </div>
+    <div class="card">
+      <h2>전사 엔진</h2>
+      <div class="muted" id="engineInfo">-</div>
+    </div>
+    <div class="card">
+      <h2>진단</h2>
+      <button class="btn btn-ghost btn-small" id="btnWipe" type="button">모든 데이터 삭제</button>
+      <div class="muted" style="margin-top:6px">전사본·녹음본·설정을 이 브라우저에서 모두 지웁니다. 되돌릴 수 없습니다.</div>
+    </div>
+  </section>
+</main>
+<footer class="foot">미팅 전사 · 개인용 · 오디오는 이 기기를 떠나지 않습니다</footer>
+<script type="importmap">
+{ "imports": {
+  "parakeet.js": "https://cdn.jsdelivr.net/npm/parakeet.js@1.4.4/src/index.js",
+  "onnxruntime-web": "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.1/dist/ort.web.min.js"
+} }
+</script>
+<script type="module">
+'use strict';
+/* ============ 유틸 (TDD 검증 로직과 동일 동작) ============ */
+const pad2 = n => String(n).padStart(2, '0');
+const $ = id => document.getElementById(id);
+function formatTitle(date, topic) {
+  const t = sanitizeTopic(topic) || '회의';
+  const yy = String(date.getFullYear()).slice(2);
+  return `${yy}-${pad2(date.getMonth()+1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())} ${t}`;
+}
+function sanitizeTopic(topic) { return String(topic||'').replace(/\s+/g,' ').trim().slice(0,50); }
+function audioExpiryDate(recordedAt, policy) {
+  if (policy === 'keep') return null;
+  if (policy === 'immediate') return new Date(recordedAt.getTime());
+  return new Date(recordedAt.getTime() + 7*24*60*60*1000);
+}
+function shouldDeleteAudio(recordedAt, now, policy) {
+  const e = audioExpiryDate(recordedAt, policy);
+  return e !== null && now.getTime() >= e.getTime();
+}
+function srtTimestamp(sec){ const ms=Math.round(sec*1000);
+  return `${pad2(Math.floor(ms/3600000))}:${pad2(Math.floor(ms%3600000/60000))}:${pad2(Math.floor(ms%60000/1000))},${String(ms%1000).padStart(3,'0')}`; }
+function toSRT(segs){ return segs.map((g,i)=>`${i+1}\n${srtTimestamp(g.start)} --> ${srtTimestamp(g.end)}\n${g.text}\n`).join('\n'); }
+function normalizeText(t){ return String(t||'').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu,'').replace(/\s+/g,' ').trim(); }
+const BANNED = ['thank you','thanks for watching','bye','subtitles by','please subscribe',
+  'transcription by','copyright','감사합니다','字幕'];
+function filterHallucinations(segs){
+  const b = new Set(BANNED.map(normalizeText));
+  const out = [];
+  let prevNorm = null, repeat = 0;
+  for (const g of segs) {
+    const n = normalizeText(g.text);
+    if (!n || b.has(n)) continue;                 // 기지 문구 / 빈 세그먼트 제거
+    if (n === prevNorm) { repeat++; if (repeat >= 2) continue; } // 3회 이상 반복 붕괴
+    else { prevNorm = n; repeat = 0; }
+    out.push(g);
+  }
+  return out;
+}
+function avgRms(ws,s,e){ let sm=0,n=0;
+  for (const w of ws){ const a=Math.max(w.start,s), b=Math.min(w.end,e);
+    if (b>a){ sm+=w.rms*(b-a); n+=(b-a); } }
+  return n>0 ? sm/n : 0;
+}
+function attributeSpeakers(segs, micE, sysE, th=0.005){
+  return segs.map(g=>{ const m=avgRms(micE,g.start,g.end), s=avgRms(sysE,g.start,g.end);
+    let sp='상대방'; if (m>s && m>th) sp='나'; else if (m<=th && s<=th) sp='알 수 없음';
+    return {...g, speaker:sp}; });
+}
+function download(name, text, mime){
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], {type:mime}));
+  a.download = name; document.body.appendChild(a); a.click();
+  setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 4000);
+}
+function esc(s){ const d=document.createElement('div'); d.textContent=String(s??''); return d.innerHTML; }
+
+/* ============ IndexedDB ============ */
+const DB='meeting-transcriber', DBV=1;
+let dbp=null;
+function db(){
+  if (dbp) return dbp;
+  dbp = new Promise((res, rej)=>{
+    const rq = indexedDB.open(DB, DBV);
+    rq.onupgradeneeded = ()=>{
+      const d = rq.result;
+      if (!d.objectStoreNames.contains('transcripts')) d.createObjectStore('transcripts',{keyPath:'id'});
+      if (!d.objectStoreNames.contains('audio')) d.createObjectStore('audio',{keyPath:['meetingId','chunkIndex']});
+      if (!d.objectStoreNames.contains('checkpoints')) d.createObjectStore('checkpoints',{keyPath:'meetingId'});
+      if (!d.objectStoreNames.contains('settings')) d.createObjectStore('settings',{keyPath:'k'});
+    };
+    rq.onsuccess = ()=>res(rq.result); rq.onerror = ()=>rej(rq.error);
+  });
+  return dbp;
+}
+async function put(store, val){
+  const d = await db();
+  return new Promise((res, rej)=>{
+    const tx = d.transaction(store,'readwrite'); tx.objectStore(store).put(val);
+    tx.oncomplete = res; tx.onerror = ()=>rej(tx.error);
+  });
+}
+async function get(store, key){
+  const d = await db();
+  return new Promise((res, rej)=>{
+    const rq = d.transaction(store,'readonly').objectStore(store).get(key);
+    rq.onsuccess = ()=>res(rq.result); rq.onerror = ()=>rej(rq.error);
+  });
+}
+async function del(store, key){
+  const d = await db();
+  return new Promise((res, rej)=>{
+    const tx = d.transaction(store,'readwrite'); tx.objectStore(store).delete(key);
+    tx.oncomplete = res; tx.onerror = ()=>rej(tx.error);
+  });
+}
+async function all(store){
+  const d = await db();
+  return new Promise((res, rej)=>{
+    const rq = d.transaction(store,'readonly').objectStore(store).getAll();
+    rq.onsuccess = ()=>res(rq.result||[]); rq.onerror = ()=>rej(rq.error);
+  });
+}
+async function clearStore(store){
+  const d = await db();
+  return new Promise((res, rej)=>{
+    const tx = d.transaction(store,'readwrite'); tx.objectStore(store).clear();
+    tx.oncomplete = res; tx.onerror = ()=>rej(tx.error);
+  });
+}
+
+/* ============ 오디오 캡처 파이프라인 ============ */
+const CHUNK_SEC = 300; // 5분 청크
+const AudioCap = {
+  ctx:null, displayStream:null, micStream:null, mixedDest:null,
+  recorder:null, analysers:{}, energy:{mic:[],sys:[]}, recStart:0,
+  chunkIndex:0, onChunk:null, onLevel:null, onTrackLost:null, meterTimer:0, elapsedTimer:0,
+
+  async start(){
+    // 1) 시스템 오디오 (상대방)
+    this.displayStream = await navigator.mediaDevices.getDisplayMedia({ video:true, audio:true });
+    const sysTrack = this.displayStream.getAudioTracks()[0] || null;
+    // 2) 마이크 (본인)
+    this.micStream = await navigator.mediaDevices.getUserMedia({ audio:true });
+    const micTrack = this.micStream.getAudioTracks()[0];
+    if (!micTrack) throw new Error('mic-missing');
+
+    const AC = window.AudioContext || window.webkitAudioContext;
+    this.ctx = new AC();
+    if (this.ctx.state === 'suspended') await this.ctx.resume();
+
+    const mkSrc = (stream, track)=>{
+      const s = new MediaStream([track]);
+      return this.ctx.createMediaStreamSource(s);
+    };
+    const sysSrc = sysTrack ? mkSrc(this.displayStream, sysTrack) : null;
+    const micSrc = mkSrc(this.micStream, micTrack);
+
+    // 레벨 미터용 analyser (gain 전)
+    const mkAn = src=>{ const an=this.ctx.createAnalyser(); an.fftSize=512; src.connect(an); return an; };
+    if (sysSrc) this.analysers.sys = mkAn(sysSrc);
+    this.analysers.mic = mkAn(micSrc);
+
+    // 믹싱 → MediaStreamDestination
+    this.mixedDest = this.ctx.createMediaStreamDestination();
+    const master = this.ctx.createGain(); master.gain.value = 1;
+    if (sysSrc){ const g=this.ctx.createGain(); sysSrc.connect(g); g.connect(master); }
+    { const g=this.ctx.createGain(); micSrc.connect(g); g.connect(master); }
+    master.connect(this.mixedDest);
+
+    // 트랙 끊김 감지
+    const lost = ()=>{ this.onTrackLost && this.onTrackLost(); };
+    this.displayStream.getTracks().forEach(t=>{ t.onended=lost; t.onmute=lost; });
+    this.micStream.getTracks().forEach(t=>{ t.onended=lost; });
+
+    this.recStart = Date.now(); this.chunkIndex = 0;
+    this.energy = { mic:[], sys:[] };
+    this.startRecorder();
+    this.startMeters();
+    return { hasSystemAudio: !!sysTrack };
+  },
+
+  /** 부분 실패 시(화면공유 성공 후 마이크 거부 등) 열린 트랙 정리 */
+  abort(){
+    clearInterval(this.meterTimer);
+    try{ if (this.recorder && this.recorder.state!=='inactive') this.recorder.stop(); }catch(_){}
+    for (const s of [this.displayStream, this.micStream])
+      if (s) s.getTracks().forEach(t=>{ try{t.stop();}catch(_){} });
+    if (this.ctx){ try{ this.ctx.close(); }catch(_){} this.ctx=null; }
+    this.displayStream = this.micStream = null; this.analysers = {};
+  },
+
+  startRecorder(){
+    const stream = this.mixedDest.stream;
+    const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : '';
+    this.recorder = new MediaRecorder(stream, mime ? { mimeType:mime } : undefined);
+    this.recorder.ondataavailable = e=>{
+      if (e.data && e.data.size > 0) this.onChunk && this.onChunk(e.data, this.chunkIndex++);
+    };
+    this.recorder.start(CHUNK_SEC*1000);
+  },
+
+  startMeters(){
+    const buf = new Float32Array(512);
+    const rmsOf = an=>{ an.getFloatTimeDomainData(buf);
+      let s=0; for(let i=0;i<buf.length;i++) s+=buf[i]*buf[i];
+      return Math.sqrt(s/buf.length); };
+    let sec = 0;
+    this.meterTimer = setInterval(()=>{
+      const t = (Date.now()-this.recStart)/1000;
+      const mR = this.analysers.mic ? rmsOf(this.analysers.mic) : 0;
+      const sR = this.analysers.sys ? rmsOf(this.analysers.sys) : 0;
+      // 1초 단위 에너지 기록 (화자 판정용)
+      this.energy.mic.push({start:sec, end:sec+1, rms:mR});
+      this.energy.sys.push({start:sec, end:sec+1, rms:sR});
+      sec++;
+      this.onLevel && this.onLevel({mic:mR, sys:sR, t});
+    }, 1000);
+  },
+
+  async stop(){
+    clearInterval(this.meterTimer);
+    const last = await new Promise(res=>{
+      if (!this.recorder || this.recorder.state==='inactive') return res(null);
+      this.recorder.ondataavailable = e=>res(e.data && e.data.size>0 ? e.data : null);
+      this.recorder.onstop = ()=>{};
+      this.recorder.stop();
+    });
+    const tracks = [];
+    if (this.displayStream) tracks.push(...this.displayStream.getTracks());
+    if (this.micStream) tracks.push(...this.micStream.getTracks());
+    tracks.forEach(t=>{ try{t.stop();}catch(_){} });
+    if (this.ctx) { try{ await this.ctx.close(); }catch(_){} this.ctx=null; }
+    this.analysers = {};
+    return last; // 마지막 청크 blob (없을 수 있음)
+  }
+};
+
+/* ============ 전사 엔진 ============ */
+const Engines = {
+  parakeet:null, whisper:null, parakeetReady:false, whisperReady:false,
+  onProgress:null, // (engine, file, loaded, total) => void
+
+  async ensureParakeet(){
+    if (this.parakeetReady) return this.parakeet;
+    const { fromHub } = await import('parakeet.js');
+    const prog = (p)=>{ this.onProgress && this.onProgress('parakeet', p.file, p.loaded, p.total); };
+    this.parakeet = await fromHub('parakeet-tdt-0.6b-v2', {
+      backend:'wasm', cpuThreads:4, encoderQuant:'int8', decoderQuant:'int8',
+      preprocessor:'nemo128', progress:prog,
+    });
+    await this.parakeet.transcribe(new Float32Array(16000), 16000); // warm-up
+    this.parakeetReady = true;
+    return this.parakeet;
+  },
+
+  async ensureWhisper(){
+    if (this.whisperReady) return this.whisper;
+    const { pipeline, env } = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.0/dist/transformers.min.js');
+    env.cacheKey = 'meeting-transcriber-whisper';
+    const prog = (p)=>{ this.onProgress && this.onProgress('whisper', p.file||'', p.loaded||0, p.total||0); };
+    this.whisper = await pipeline('automatic-speech-recognition', 'Xenova/whisper-base.en',
+      { device:'wasm', dtype:'q8', progress_callback:prog });
+    this.whisperReady = true;
+    return this.whisper;
+  },
+
+  /** 16kHz mono Float32Array 리샘플 */
+  async resample16k(blob){
+    const ab = await blob.arrayBuffer();
+    const AC = window.AudioContext || window.webkitAudioContext;
+    const tmp = new AC();
+    try {
+      const buf = await tmp.decodeAudioData(ab);
+      const target = 16000;
+      const off = new OfflineAudioContext(1, Math.max(1, Math.ceil(buf.duration*target)), target);
+      const src = off.createBufferSource(); src.buffer = buf;
+      src.connect(off.destination); src.start(0);
+      const rendered = await off.startRendering();
+      return rendered.getChannelData(0);
+    } finally { try{ await tmp.close(); }catch(_){} }
+  },
+
+  /** 무성 청크 스킵: 전체 RMS가 임계값 미만이면 전사 생략 */
+  isSilent(pcm, th=0.008){
+    let s=0; const n=Math.min(pcm.length, 16000*30);
+    for (let i=0;i<n;i+=7) s += pcm[i]*pcm[i];
+    return Math.sqrt(s/(n/7)) < th;
+  },
+
+  /** 한 청크 전사 → [{start,end,text}] (청크 내 상대 시간) */
+  async transcribeChunk(pcm){
+    if (this.isSilent(pcm)) return [];
+    // primary: parakeet
+    try {
+      const m = await this.ensureParakeet();
+      const r = await m.transcribe(pcm, 16000, { returnTimestamps:true, returnConfidences:true, frameStride:1 });
+      const words = (r.words||[]).filter(w=>w.confidence==null || w.confidence>0.15);
+      return groupWords(words.map(w=>({start:w.start_time, end:w.end_time, text:w.text})));
+    } catch(e){ console.error('parakeet 실패, whisper 폴백:', e); }
+    // fallback: whisper
+    const asr = await this.ensureWhisper();
+    const out = await asr(pcm, { chunk_length_s:30, stride_length_s:5,
+      language:'english', task:'transcribe', return_timestamps:true });
+    const segs = (out.chunks||[]).map(c=>({ start:c.timestamp[0], end:c.timestamp[1], text:c.text }));
+    return filterHallucinations(segs);
+  }
+};
+
+/** 단어들을 세그먼트로 묶기 (문장부호/12초/25단어 기준) */
+function groupWords(words){
+  const segs=[]; let cur=null;
+  const push=()=>{ if(cur&&cur.text.trim()){cur.text=cur.text.trim();segs.push(cur);} cur=null; };
+  for (const w of words){
+    if(!cur) cur={start:w.start,end:w.end,text:''};
+    if (w.start - cur.end > 1.2) push();
+    if(!cur) cur={start:w.start,end:w.end,text:''};
+    cur.text += (cur.text?' ':'')+w.text; cur.end=w.end;
+    if (/[.!?]$/.test(w.text) || cur.text.split(' ').length>=25 || cur.end-cur.start>=12) push();
+  }
+  push();
+  return filterHallucinations(segs);
+}
+
+/* ============ 녹음 세션 + 전사 큐 ============ */
+const App = {
+  meeting:null, queue:[], processing:false, lastSound:0, silenceWarned:false,
+  audioEl:null,
+
+  async startRecording(){
+    hideBanner('permErr');
+    const topic = $('topicInput').value;
+    // 1) 캡처 (권한 팝업)
+    let cap;
+    try { cap = await AudioCap.start(); }
+    catch(e){
+      AudioCap.abort(); // 화면공유만 성공한 경우 트랙 정리
+      const el = $('permErr');
+      if (e && e.name==='NotAllowedError'){
+        el.textContent = '권한이 거부됐습니다. 화면 공유를 취소했거나 마이크가 차단됐습니다. 주소창 자물쇠 → 사이트 설정에서 허용 후 다시 시도하세요.';
+      } else {
+        el.textContent = '캡처 시작 실패: ' + (e && e.message || e);
+      }
+      el.classList.add('show');
+      return;
+    }
+    // 2) 세션 생성
+    const startedAt = new Date();
+    this.meeting = {
+      id: 'm'+Date.now().toString(36), topic: sanitizeTopic(topic),
+      startedAt: startedAt.getTime(), title: formatTitle(startedAt, topic),
+      chunksDone:0, chunksTotal:0, status:'recording',
+    };
+    await put('checkpoints', { meetingId:this.meeting.id, topic:this.meeting.topic,
+      startedAt:this.meeting.startedAt, title:this.meeting.title,
+      segmentsByChunk:{}, status:'recording' });
+    this.lastSound = Date.now(); this.silenceWarned = false;
+
+    // 3) 콜백 연결
+    AudioCap.onChunk = (blob, idx)=>this.onAudioChunk(blob, idx);
+    AudioCap.onLevel = ({mic, sys})=>{
+      $('mMic').style.width = Math.min(100, mic*400)+'%';
+      $('mSys').style.width = Math.min(100, sys*400)+'%';
+      if (mic>0.01 || sys>0.01) this.lastSound = Date.now();
+      // 시스템 오디오 무음 경고 (시작 15초 후부터)
+      const el = $('sysAudioWarn');
+      const elapsed = (Date.now()-AudioCap.recStart)/1000;
+      if (elapsed>15 && !cap.hasSystemAudio) el.classList.add('show'); else el.classList.remove('show');
+      // 10분 무음 → 깜빡 잊음 알림
+      if (!this.silenceWarned && Date.now()-this.lastSound > 10*60*1000){
+        this.silenceWarned = true;
+        if (confirm('10분간 소리가 없습니다. 아직 녹음 중입니다. 중지할까요?')) this.stopRecording();
+      }
+      // 4시간 자동 중지
+      if (elapsed > 4*3600) this.stopRecording();
+    };
+    AudioCap.onTrackLost = ()=>{
+      $('trackLostWarn').classList.add('show');
+      this.stopRecording();
+    };
+
+    showScreen('scr-rec');
+    $('topicInput').value = '';
+    window.onbeforeunload = ()=> '녹음 중입니다. 페이지를 닫으면 녹음이 중단됩니다.';
+    this.tickClock();
+  },
+
+  tickClock(){
+    clearInterval(AudioCap.elapsedTimer);
+    const t0 = AudioCap.recStart;
+    const fmt = ms=>{ const s=Math.floor(ms/1000);
+      return pad2(Math.floor(s/3600))+':'+pad2(Math.floor(s%3600/60))+':'+pad2(s%60); };
+    const upd = ()=>{
+      const e = Date.now()-t0;
+      $('elapsed').textContent = fmt(e);
+      const mm = Math.floor(e/60000), ss = Math.floor(e%60000/1000);
+      $('recClock').textContent = pad2(mm)+':'+pad2(ss);
+    };
+    upd(); AudioCap.elapsedTimer = setInterval(upd, 1000);
+  },
+
+  async onAudioChunk(blob, idx){
+    if (!this.meeting) return;
+    const m = this.meeting;
+    m.chunksTotal++;
+    const settings = await get('settings','audioPolicy');
+    const policy = settings ? settings.v : '7days';
+    const recordedAt = new Date();
+    await put('audio', { meetingId:m.id, chunkIndex:idx, blob,
+      recordedAt:recordedAt.getTime(),
+      expiresAt:(()=>{const e=audioExpiryDate(recordedAt,policy);return e?e.getTime():null;})() });
+    this.queue.push({ meetingId:m.id, chunkIndex:idx });
+    this.updateTxProg();
+    this.pumpQueue();
+  },
+
+  updateTxProg(){
+    if (!this.meeting) return;
+    $('txProg').textContent =
+      this.meeting.chunksDone >= this.meeting.chunksTotal && this.meeting.chunksTotal>0
+      ? `전사 완료 (${this.meeting.chunksTotal} 청크)`
+      : `전사 중… ${this.meeting.chunksDone}/${this.meeting.chunksTotal} 청크`;
+  },
+
+  async pumpQueue(){
+    if (this.processing) return;
+    this.processing = true;
+    try {
+      while (this.queue.length){
+        const job = this.queue.shift();
+        await this.transcribeJob(job);
+        if (this.meeting && job.meetingId===this.meeting.id){
+          this.meeting.chunksDone++; this.updateTxProg();
+        }
+      }
+    } finally { this.processing = false; }
+  },
+
+  async transcribeJob({meetingId, chunkIndex}){
+    const rec = await get('audio', [meetingId, chunkIndex]);
+    if (!rec) return;
+    try {
+      const pcm = await Engines.resample16k(rec.blob);
+      const offset = chunkIndex * CHUNK_SEC;
+      const segs = await Engines.transcribeChunk(pcm);
+      // 절대 시간으로 변환 + 화자 판정 (세션 에너지 사용)
+      const cp = await get('checkpoints', meetingId);
+      const abs = segs.map(s=>({ start:s.start+offset, end:s.end+offset, text:s.text }));
+      const labeled = attributeSpeakers(abs, App.energyOf(meetingId).mic, App.energyOf(meetingId).sys);
+      const byChunk = (cp && cp.segmentsByChunk) || {};
+      byChunk[chunkIndex] = labeled;
+      await put('checkpoints', { ...(cp||{}), meetingId, segmentsByChunk:byChunk });
+    } catch(e){ console.error('청크 전사 실패', chunkIndex, e); }
+  },
+
+  energyOf(meetingId){
+    // 현재 세션의 에너지 (복구 시에는 빈 배열 → 전부 '상대방' 판정, 허용)
+    if (this.meeting && this.meeting.id===meetingId) return AudioCap.energy;
+    return { mic:[], sys:[] };
+  },
+
+  async stopRecording(){
+    if (!this.meeting) return;
+    const m = this.meeting;
+    clearInterval(AudioCap.elapsedTimer);
+    $('btnStop').disabled = true; $('btnStop').textContent = '저장 중…';
+    try {
+      const lastBlob = await AudioCap.stop();
+      if (lastBlob){ // 마지막 조각 (5분 미만)
+        const idx = AudioCap.chunkIndex;
+        await this.onAudioChunk(lastBlob, idx);
+      }
+      // 남은 큐가 빌 때까지 대기
+      while (this.queue.length || this.processing) await new Promise(r=>setTimeout(r,500));
+      await this.finalize(m.id);
+    } finally {
+      $('btnStop').disabled = false; $('btnStop').textContent = '중지하고 저장';
+      this.meeting = null;
+      window.onbeforeunload = null;
+      showScreen('scr-list'); renderList();
+    }
+  },
+
+  async finalize(meetingId){
+    const cp = await get('checkpoints', meetingId);
+    if (!cp) return;
+    const allSegs = Object.entries(cp.segmentsByChunk||{})
+      .sort((a,b)=>a[0]-b[0]).flatMap(([,s])=>s)
+      .sort((a,b)=>a.start-b.start);
+    await put('transcripts', {
+      id: meetingId, title: cp.title, topic: cp.topic, startedAt: cp.startedAt,
+      segments: allSegs, createdAt: Date.now(),
+      segCount: allSegs.length,
+    });
+    await put('checkpoints', { ...cp, status:'done' });
+    // 정책이 즉시폐기면 오디오 바로 정리
+    const settings = await get('settings','audioPolicy');
+    if (settings && settings.v==='immediate'){
+      const auds = await all('audio');
+      for (const a of auds.filter(x=>x.meetingId===meetingId)) await del('audio',[a.meetingId,a.chunkIndex]);
+    }
+  },
+
+  /** 크래시 복구: 중단된 세션 제안 */
+  async checkRecovery(){
+    const cps = (await all('checkpoints')).filter(c=>c.status==='recording');
+    if (!cps.length) return;
+    const cp = cps[0];
+    const n = Object.keys(cp.segmentsByChunk||{}).length;
+    if (confirm(`중단된 녹음이 있습니다 (${cp.title}, 전사 ${n}청크). 복구해서 전사를 마칠까요?`)){
+      // 미전사 청크를 큐에 재등록
+      const auds = (await all('audio')).filter(a=>a.meetingId===cp.meetingId)
+        .sort((a,b)=>a.chunkIndex-b.chunkIndex);
+      const doneIdx = new Set(Object.keys(cp.segmentsByChunk||{}).map(Number));
+      for (const a of auds) if (!doneIdx.has(a.chunkIndex)) this.queue.push({meetingId:cp.meetingId, chunkIndex:a.chunkIndex});
+      this.meeting = { id:cp.meetingId, chunksDone:doneIdx.size, chunksTotal:auds.length };
+      await this.pumpQueue();
+      await this.finalize(cp.meetingId);
+      this.meeting = null;
+      alert('복구 완료. 목록에서 확인하세요.');
+      showScreen('scr-list'); renderList();
+    } else {
+      await put('checkpoints', { ...cp, status:'abandoned' });
+    }
+  },
+
+  /** 보관 정책 스윕 */
+  async sweepRetention(){
+    const settings = await get('settings','audioPolicy');
+    const policy = settings ? settings.v : '7days';
+    const now = new Date();
+    const auds = await all('audio');
+    for (const a of auds){
+      if (shouldDeleteAudio(new Date(a.recordedAt), now, policy)) await del('audio',[a.meetingId,a.chunkIndex]);
+    }
+  },
+
+  playSegmentAt(meetingId, absSec){
+    (async ()=>{
+      const idx = Math.floor(absSec / CHUNK_SEC);
+      const rec = await get('audio', [meetingId, idx]);
+      if (!rec){ alert('오디오가 삭제되었습니다 (보관 정책).'); return; }
+      if (this.audioEl) { this.audioEl.pause(); }
+      const url = URL.createObjectURL(rec.blob);
+      this.audioEl = new Audio(url);
+      this.audioEl.currentTime = Math.max(0, absSec - idx*CHUNK_SEC);
+      this.audioEl.onended = ()=>URL.revokeObjectURL(url);
+      this.audioEl.play().catch(()=>{});
+    })();
+  },
+};
+
+/* ============ UI ============ */
+function showScreen(id){
+  document.querySelectorAll('.screen').forEach(s=>s.classList.toggle('active', s.id===id));
+  window.scrollTo(0,0);
+}
+function hideBanner(id){ $(id).classList.remove('show'); }
+function fmtDur(sec){ sec=Math.floor(sec);
+  return pad2(Math.floor(sec/3600))+':'+pad2(Math.floor(sec%3600/60))+':'+pad2(sec%60); }
+function fmtClock(ts){ const d=new Date(ts);
+  return pad2(d.getFullYear()%100)+'-'+pad2(d.getMonth()+1)+'-'+pad2(d.getDate())+' '+
+         pad2(d.getHours())+':'+pad2(d.getMinutes()); }
+
+let currentReadId = null;
+
+async function renderList(){
+  const q = ($('searchInput').value||'').trim().toLowerCase();
+  let items = await all('transcripts');
+  items.sort((a,b)=>b.startedAt-a.startedAt);
+  if (q) items = items.filter(t =>
+    (t.title||'').toLowerCase().includes(q) ||
+    (t.segments||[]).some(s=>(s.text||'').toLowerCase().includes(q)));
+  const box = $('meetList');
+  if (!items.length){ box.innerHTML = '<div class="muted">아직 전사본이 없습니다.</div>'; return; }
+  box.innerHTML = '';
+  for (const t of items){
+    const row = document.createElement('div'); row.className='meet-item';
+    const info = document.createElement('div'); info.className='t';
+    const ttl = document.createElement('div'); ttl.className='title'; ttl.textContent=t.title;
+    const sub = document.createElement('div'); sub.className='sub';
+    const dur = t.segments&&t.segments.length ? t.segments[t.segments.length-1].end : 0;
+    sub.textContent = `${t.segCount||0}개 구간 · 약 ${fmtDur(dur)}`;
+    info.append(ttl, sub);
+    const open = document.createElement('button'); open.className='btn btn-ghost btn-small';
+    open.type='button'; open.textContent='읽기';
+    open.onclick = ()=>openReader(t.id);
+    const delBtn = document.createElement('button'); delBtn.className='btn btn-ghost btn-small';
+    delBtn.type='button'; delBtn.textContent='삭제';
+    delBtn.onclick = async ()=>{
+      if (!confirm(`"${t.title}" 전사본을 삭제할까요? (녹음본도 함께 삭제됩니다)`)) return;
+      await del('transcripts', t.id);
+      for (const a of (await all('audio')).filter(x=>x.meetingId===t.id))
+        await del('audio',[a.meetingId,a.chunkIndex]);
+      await del('checkpoints', t.id);
+      renderList();
+    };
+    row.append(info, open, delBtn);
+    box.appendChild(row);
+  }
+}
+
+async function openReader(id){
+  const t = await get('transcripts', id);
+  if (!t) return;
+  currentReadId = id;
+  $('readTitle').textContent = t.title;
+  const dur = t.segments.length ? t.segments[t.segments.length-1].end : 0;
+  $('readMeta').textContent = `${fmtClock(t.startedAt)} · ${t.segments.length}개 구간 · 약 ${fmtDur(dur)}`;
+  const box = $('segList'); box.innerHTML='';
+  const auds = await all('audio');
+  const hasAudio = auds.some(a=>a.meetingId===id);
+  for (const s of t.segments){
+    const div = document.createElement('div'); div.className='seg';
+    const spk = document.createElement('span');
+    spk.className = 'spk ' + (s.speaker==='나'?'me':s.speaker==='상대방'?'them':'unk');
+    spk.textContent = s.speaker;
+    const ts = document.createElement('button'); ts.className='ts'; ts.type='button';
+    ts.textContent = srtTimestamp(s.start).slice(0,8);
+    ts.disabled = !hasAudio;
+    ts.title = hasAudio ? '해당 구간 듣기' : '오디오 삭제됨';
+    if (hasAudio) ts.onclick = ()=>App.playSegmentAt(id, s.start);
+    const tx = document.createElement('span'); tx.textContent = ' ' + s.text;
+    div.append(spk, ts, tx);
+    box.appendChild(div);
+  }
+  showScreen('scr-read');
+}
+
+function txtOf(t){
+  const lines = [t.title, ''];
+  for (const s of t.segments)
+    lines.push(`[${srtTimestamp(s.start).slice(0,8)}] ${s.speaker}: ${s.text}`);
+  return lines.join('\n');
+}
+
+async function refreshModelStatus(){
+  const el = $('modelStatus');
+  const parts = [];
+  parts.push('고품질(parakeet): ' + (Engines.parakeetReady ? '준비됨' : '미다운로드'));
+  parts.push('기본(whisper): ' + (Engines.whisperReady ? '준비됨' : '미다운로드'));
+  el.innerHTML = parts.map(esc).join('<br>');
+  $('engineInfo').innerHTML = parts.map(esc).join('<br>') +
+    '<br>WebGPU 없음 → WASM으로 동작합니다.';
+}
+
+async function init(){
+  // 화면 전환
+  $('navList').onclick = ()=>{ showScreen('scr-list'); renderList(); };
+  $('navSettings').onclick = ()=>showScreen('scr-settings');
+  $('btnBack').onclick = ()=>{ showScreen('scr-list'); renderList(); };
+  // 시작/중지
+  $('btnStart').onclick = ()=>App.startRecording();
+  $('btnStop').onclick = ()=>App.stopRecording();
+  // 검색
+  $('searchInput').oninput = ()=>renderList();
+  // 다운로드
+  $('btnDlTxt').onclick = async ()=>{
+    const t = await get('transcripts', currentReadId); if(!t) return;
+    download(t.title+'.txt', txtOf(t), 'text/plain;charset=utf-8');
+  };
+  $('btnDlSrt').onclick = async ()=>{
+    const t = await get('transcripts', currentReadId); if(!t) return;
+    download(t.title+'.srt', toSRT(t.segments.map(s=>({start:s.start,end:s.end,text:`[${s.speaker}] ${s.text}`}))), 'text/plain;charset=utf-8');
+  };
+  // 설정
+  const st = await get('settings','audioPolicy');
+  $('audioPolicy').value = st ? st.v : '7days';
+  $('audioPolicy').onchange = async e=>{
+    await put('settings',{k:'audioPolicy', v:e.target.value});
+  };
+  $('btnWipe').onclick = async ()=>{
+    if (!confirm('정말 모든 데이터를 삭제할까요? 되돌릴 수 없습니다.')) return;
+    for (const s of ['transcripts','audio','checkpoints','settings']) await clearStore(s);
+    alert('삭제됐습니다.'); showScreen('scr-start');
+  };
+  // 모델 미리받기
+  Engines.onProgress = (engine,file,loaded,total)=>{
+    $('modelProgWrap').style.display='block';
+    const pct = total>0 ? Math.round(loaded/total*100) : 0;
+    $('modelProg').style.width = pct+'%';
+    $('modelStatus').textContent = `${engine} 다운로드 중… ${pct}% (${file})`;
+  };
+  $('btnPreload').onclick = async ()=>{
+    $('btnPreload').disabled = true;
+    try { await Engines.ensureParakeet(); }
+    catch(e){ alert('모델 다운로드 실패: '+(e&&e.message||e)); }
+    $('btnPreload').disabled = false;
+    $('modelProgWrap').style.display='none';
+    refreshModelStatus();
+  };
+
+  await App.sweepRetention();
+  await refreshModelStatus();
+  await App.checkRecovery();
+  // 저장소 유지 요청 (eviction 방지)
+  if (navigator.storage && navigator.storage.persist){
+    try{ await navigator.storage.persist(); }catch(_){}
+  }
+}
+
+document.addEventListener('DOMContentLoaded', init);
+</script>
+</body>
+</html>
