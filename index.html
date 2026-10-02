@@ -131,7 +131,7 @@ if ('serviceWorker' in navigator) {
       <h2>전사 모델 상태</h2>
       <div class="muted" id="modelStatus">확인 중…</div>
       <div class="progress" id="modelProgWrap" style="display:none"><div id="modelProg"></div></div>
-      <button class="btn btn-ghost btn-small" id="btnPreload" type="button">고품질 모델 미리 받기 (661MB, 1회)</button>
+      <button class="btn btn-primary" id="btnPreload" type="button">고품질 모델 미리 받기 (661MB, 1회)</button>
       <div class="muted" style="margin-top:6px">모델을 받아두면 회의 중 전사가 더 정확하고 빨라집니다.
       받지 않아도 녹음은 바로 시작되고, 가벼운 모델로 전사됩니다.</div>
     </div>
@@ -855,6 +855,8 @@ async function refreshModelStatus(){
   el.innerHTML = parts.map(esc).join('<br>');
   $('engineInfo').innerHTML = parts.map(esc).join('<br>') +
     '<br>WebGPU 없음 → WASM으로 동작합니다.';
+  const bp = $('btnPreload');
+  if (bp && Engines.parakeetReady){ bp.textContent = '고품질 모델 준비됨 ✓'; bp.disabled = true; }
 }
 
 async function init(){
@@ -895,10 +897,17 @@ async function init(){
     $('modelStatus').textContent = `${engine} 다운로드 중… ${pct}% (${file})`;
   };
   $('btnPreload').onclick = async ()=>{
-    $('btnPreload').disabled = true;
+    const btn = $('btnPreload');
+    if (Engines.parakeetReady) return;
+    btn.disabled = true;
+    btn.textContent = '모델 준비 중…';
+    // 클릭 즉시 피드백: 엔진 로딩 단계에서는 파일 진행률이 없어 바로 표시
+    $('modelProgWrap').style.display='block';
+    $('modelStatus').textContent = '엔진 로딩 중… (첫 단계는 시간이 걸릴 수 있습니다)';
     try { await Engines.ensureParakeet(); }
     catch(e){ alert('모델 다운로드 실패: '+(e&&e.message||e)); }
-    $('btnPreload').disabled = false;
+    btn.textContent = Engines.parakeetReady ? '고품질 모델 준비됨 ✓' : '고품질 모델 미리 받기 (661MB, 1회)';
+    btn.disabled = Engines.parakeetReady ? true : false;
     $('modelProgWrap').style.display='none';
     refreshModelStatus();
   };
