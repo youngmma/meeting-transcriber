@@ -121,6 +121,14 @@ if ('serviceWorker' in navigator) {
 <main>
   <!-- 시작 화면 -->
   <section class="screen active" id="scr-start">
+    <div class="card" id="recoveryCard" style="display:none;border-left:4px solid #e6a23c">
+      <h2>중단된 녹음</h2>
+      <div class="muted" id="recoveryInfo"></div>
+      <div style="margin-top:8px">
+        <button class="btn btn-primary btn-small" id="btnRecover" type="button">복구해서 전사 마치기</button>
+        <button class="btn btn-ghost btn-small" id="btnAbandon" type="button">버리기</button>
+      </div>
+    </div>
     <div class="card">
       <h2>새 회의 녹음</h2>
       <label class="lbl" for="topicInput">주제 (선택)</label>
@@ -664,10 +672,12 @@ const App = {
 
   updateTxProg(){
     if (!this.meeting) return;
-    $('txProg').textContent =
-      this.meeting.chunksDone >= this.meeting.chunksTotal && this.meeting.chunksTotal>0
+    const txt = this.meeting.chunksDone >= this.meeting.chunksTotal && this.meeting.chunksTotal>0
       ? `전사 완료 (${this.meeting.chunksTotal} 청크)`
       : `전사 중… ${this.meeting.chunksDone}/${this.meeting.chunksTotal} 청크`;
+    const tp = $('txProg'); if (tp) tp.textContent = txt;
+    const ri = $('recoveryInfo');
+    if (ri && $('recoveryCard') && $('recoveryCard').style.display!=='none') ri.textContent = txt;
   },
 
   async pumpQueue(){
@@ -792,27 +802,49 @@ const App = {
     } catch(e){ console.warn('자동 다운로드 실패', e); }
   },
 
-  /** 크래시 복구: 중단된 세션 제안 */
+  /** 크래시 복구: 중단된 세션을 시작 화면 카드로 표시 (네이티브 confirm 대신) */
   async checkRecovery(){
+    const card = $('recoveryCard');
     const cps = (await all('checkpoints')).filter(c=>c.status==='recording');
-    if (!cps.length) return;
+    if (!cps.length){ if (card) card.style.display='none'; return; }
     const cp = cps[0];
     const n = Object.keys(cp.segmentsByChunk||{}).length;
-    if (confirm(`중단된 녹음이 있습니다 (${cp.title}, 전사 ${n}청크). 복구해서 전사를 마칠까요?`)){
-      // 미전사 청크를 큐에 재등록
-      const auds = (await all('audio')).filter(a=>a.meetingId===cp.meetingId)
-        .sort((a,b)=>a.chunkIndex-b.chunkIndex);
-      const doneIdx = new Set(Object.keys(cp.segmentsByChunk||{}).map(Number));
-      for (const a of auds) if (!doneIdx.has(a.chunkIndex)) this.queue.push({meetingId:cp.meetingId, chunkIndex:a.chunkIndex});
-      this.meeting = { id:cp.meetingId, chunksDone:doneIdx.size, chunksTotal:auds.length };
-      await this.pumpQueue();
-      await this.finalize(cp.meetingId);
-      this.meeting = null;
-      alert('복구 완료. 목록에서 확인하세요.');
-      showScreen('scr-list'); renderList();
-    } else {
-      await put('checkpoints', { ...cp, status:'abandoned' });
+    const auds = (await all('audio')).filter(a=>a.meetingId===cp.meetingId)
+      .sort((a,b)=>a.chunkIndex-b.chunkIndex);
+    if (card){
+      card.style.display='block';
+      $('recoveryInfo').textContent = `${cp.title} — 전사 ${n}청크, 오디오 ${auds.length}청크`;
+      $('btnRecover').onclick = ()=>this.doRecover(cp.meetingId);
+      $('btnAbandon').onclick = async ()=>{
+        if (!confirm('중단된 녹음을 버릴까요? 저장된 오디오도 함께 삭제됩니다.')) return;
+        await put('checkpoints', { ...cp, status:'abandoned' });
+        for (const a of auds) await del('audio',[a.meetingId,a.chunkIndex]);
+        card.style.display='none';
+      };
     }
+  },
+
+  /** 복구 실행: 미전사 청크를 큐에 재등록 후 전사 */
+  async doRecover(meetingId){
+    const cp = await get('checkpoints', meetingId);
+    if (!cp) return;
+    const card = $('recoveryCard');
+    const auds = (await all('audio')).filter(a=>a.meetingId===meetingId)
+      .sort((a,b)=>a.chunkIndex-b.chunkIndex);
+    if (!auds.length){ alert('복구할 오디오가 없습니다.'); return; }
+    const doneIdx = new Set(Object.keys(cp.segmentsByChunk||{}).map(Number));
+    for (const a of auds) if (!doneIdx.has(a.chunkIndex)) this.queue.push({meetingId, chunkIndex:a.chunkIndex});
+    this.meeting = { id:meetingId, chunksDone:doneIdx.size, chunksTotal:auds.length, recovering:true };
+    if (card){
+      $('btnRecover').disabled = true; $('btnAbandon').disabled = true;
+      $('recoveryInfo').textContent = `${cp.title} — 전사 중…`;
+    }
+    await this.pumpQueue();
+    await this.finalize(meetingId);
+    this.meeting = null;
+    if (card){ card.style.display='none'; $('btnRecover').disabled = false; $('btnAbandon').disabled = false; }
+    alert('복구 완료. 목록에서 확인하세요.');
+    showScreen('scr-list'); renderList();
   },
 
   /** 보관 정책 스윕 */
