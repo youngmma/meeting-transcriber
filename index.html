@@ -113,7 +113,7 @@ if ('serviceWorker' in navigator) {
 </head>
 <body>
 <header class="top">
-  <h1>미팅 전사</h1>
+  <h1 id="brandHome" style="cursor:pointer" title="홈으로">Meeting Transcriber</h1>
   <div class="spacer"></div>
   <button class="icon-btn" id="navList" type="button">목록</button>
   <button class="icon-btn" id="navSettings" type="button">설정</button>
@@ -157,7 +157,7 @@ if ('serviceWorker' in navigator) {
 
   <!-- 녹음 중 화면 -->
   <section class="screen" id="scr-rec">
-    <div class="rec-indicator"><span class="rec-dot"></span><span>녹음 중</span><span class="spacer" style="flex:1"></span><span id="recClock">00:00</span></div>
+    <div class="rec-indicator"><span class="rec-dot" id="recDot"></span><span id="recLabel">녹음 중</span><span class="spacer" style="flex:1"></span><span id="recClock">00:00</span></div>
     <div class="banner warn" id="sysAudioWarn">상대방 소리가 안 들어옵니다. 화면 공유 선택 시 <b>오디오 공유</b>를 켜셨는지 확인하세요.</div>
     <div class="banner err" id="trackLostWarn">오디오 입력이 끊겼습니다. 녹음을 다시 시작해 주세요.</div>
     <div class="card">
@@ -165,6 +165,7 @@ if ('serviceWorker' in navigator) {
       <div class="meter-row"><span class="lab">상대방 소리</span><div class="meter sys"><div id="mSys"></div></div></div>
       <div class="meter-row"><span class="lab">내 목소리</span><div class="meter"><div id="mMic"></div></div></div>
       <div class="muted" id="txProg" style="margin-top:8px">전사 대기 중…</div>
+      <div class="progress" id="saveProgWrap" style="display:none;margin-top:8px"><div id="saveProg"></div></div>
     </div>
     <button class="btn btn-danger" id="btnStop" type="button">중지하고 저장</button>
   </section>
@@ -636,6 +637,9 @@ const App = {
     };
 
     showScreen('scr-rec');
+    const rl0 = $('recLabel'); if (rl0) rl0.textContent = '녹음 중';
+    const rd0 = $('recDot'); if (rd0){ rd0.style.animation=''; rd0.style.background=''; }
+    const spw0 = $('saveProgWrap'); if (spw0) spw0.style.display='none';
     $('topicInput').value = '';
     window.onbeforeunload = ()=> '녹음 중입니다. 페이지를 닫으면 녹음이 중단됩니다.';
     this.tickClock();
@@ -678,6 +682,10 @@ const App = {
     const tp = $('txProg'); if (tp) tp.textContent = txt;
     const ri = $('recoveryInfo');
     if (ri && $('recoveryCard') && $('recoveryCard').style.display!=='none') ri.textContent = txt;
+    // 저장 중 프로그레스 바
+    const spw = $('saveProgWrap'), sp = $('saveProg');
+    if (sp && spw && spw.style.display!=='none' && this.meeting.chunksTotal>0)
+      sp.style.width = Math.round(this.meeting.chunksDone/this.meeting.chunksTotal*100)+'%';
   },
 
   async pumpQueue(){
@@ -710,7 +718,17 @@ const App = {
       byChunk[chunkIndex] = labeled;
       engByChunk[chunkIndex] = engine;
       await put('checkpoints', { ...(cp||{}), meetingId, segmentsByChunk:byChunk, enginesByChunk:engByChunk });
-    } catch(e){ console.error('청크 전사 실패', chunkIndex, e); }
+    } catch(e){
+      console.error('청크 전사 실패', chunkIndex, e);
+      try {
+        const cp2 = await get('checkpoints', meetingId);
+        if (cp2){
+          const errs = cp2.transcribeErrors || {};
+          errs[chunkIndex] = String((e && e.message) || e).slice(0,200);
+          await put('checkpoints', { ...cp2, transcribeErrors: errs });
+        }
+      } catch(_){}
+    }
   },
 
   energyOf(meetingId){
@@ -724,6 +742,9 @@ const App = {
     const m = this.meeting;
     clearInterval(AudioCap.elapsedTimer);
     $('btnStop').disabled = true; $('btnStop').textContent = '저장 중…';
+    const rl = $('recLabel'); if (rl) rl.textContent = '녹음 마침';
+    const rd = $('recDot'); if (rd){ rd.style.animation='none'; rd.style.background='#4caf50'; }
+    const spw = $('saveProgWrap'); if (spw){ spw.style.display='block'; $('saveProg').style.width='0%'; }
     try {
       const lastBlob = await AudioCap.stop();
       if (lastBlob){ // 마지막 조각 (5분 미만)
@@ -735,6 +756,7 @@ const App = {
       await this.finalize(m.id);
     } finally {
       $('btnStop').disabled = false; $('btnStop').textContent = '중지하고 저장';
+      const spw2 = $('saveProgWrap'); if (spw2) spw2.style.display='none';
       this.meeting = null;
       window.onbeforeunload = null;
       showScreen('scr-list'); renderList();
@@ -779,11 +801,13 @@ const App = {
     allSegs.sort((a,b)=>a.start-b.start);
     // 사용된 전사 엔진 요약 (parakeet / whisper / 혼합)
     const engVals = Object.values(cp.enginesByChunk||{}).filter(e=>e && e!=='none');
-    const engines = [...new Set(engVals)].join('+') || '알 수 없음';
+    const errs = Object.values(cp.transcribeErrors||{});
+    const engines = [...new Set(engVals)].join('+') || (errs.length ? '전사 실패' : '알 수 없음');
+    const note = errs.length ? String(errs[0]).slice(0,120) : '';
     await put('transcripts', {
       id: meetingId, title: cp.title, topic: cp.topic, startedAt: cp.startedAt,
       segments: allSegs, createdAt: Date.now(),
-      segCount: allSegs.length, engines,
+      segCount: allSegs.length, engines, note,
     });
     await put('checkpoints', { ...cp, status:'done' });
     // 정책이 즉시폐기면 오디오 바로 정리
@@ -903,7 +927,7 @@ async function renderList(){
     const ttl = document.createElement('div'); ttl.className='title'; ttl.textContent=t.title;
     const sub = document.createElement('div'); sub.className='sub';
     const dur = t.segments&&t.segments.length ? t.segments[t.segments.length-1].end : 0;
-    sub.textContent = `${t.segCount||0}개 구간 · 약 ${fmtDur(dur)}`;
+    sub.textContent = `${t.segCount||0}개 구간 · 약 ${fmtDur(dur)}` + (t.note ? ` · ${t.note}` : '');
     info.append(ttl, sub);
     const open = document.createElement('button'); open.className='btn btn-ghost btn-small';
     open.type='button'; open.textContent='읽기';
@@ -929,7 +953,7 @@ async function openReader(id){
   currentReadId = id;
   $('readTitle').textContent = t.title;
   const dur = t.segments.length ? t.segments[t.segments.length-1].end : 0;
-  $('readMeta').textContent = `${fmtClock(t.startedAt)} · ${t.segments.length}개 구간 · 약 ${fmtDur(dur)}` + (t.engines ? ` · 전사: ${t.engines}` : '');
+  $('readMeta').textContent = `${fmtClock(t.startedAt)} · ${t.segments.length}개 구간 · 약 ${fmtDur(dur)}` + (t.engines ? ` · 전사: ${t.engines}` : '') + (t.note ? ` · ${t.note}` : '');
   const box = $('segList'); box.innerHTML='';
   const auds = await all('audio');
   const hasAudio = auds.some(a=>a.meetingId===id);
@@ -994,6 +1018,7 @@ async function refreshModelStatus(){
 
 async function init(){
   // 화면 전환
+  $('brandHome').onclick = ()=>showScreen('scr-start');
   $('navList').onclick = ()=>{ showScreen('scr-list'); renderList(); };
   $('navSettings').onclick = ()=>showScreen('scr-settings');
   $('btnBack').onclick = ()=>{ showScreen('scr-list'); renderList(); };
