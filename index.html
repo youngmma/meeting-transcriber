@@ -802,8 +802,9 @@ const App = {
     // 사용된 전사 엔진 요약 (parakeet / whisper / 혼합)
     const engVals = Object.values(cp.enginesByChunk||{}).filter(e=>e && e!=='none');
     const errs = Object.values(cp.transcribeErrors||{});
-    const engines = [...new Set(engVals)].join('+') || (errs.length ? '전사 실패' : '알 수 없음');
-    const note = errs.length ? String(errs[0]).slice(0,120) : '';
+    const engKeys = Object.keys(cp.enginesByChunk||{});
+    const engines = [...new Set(engVals)].join('+') || (errs.length ? '전사 실패' : (engKeys.length>0 ? '무음' : '알 수 없음'));
+    const note = errs.length ? String(errs[0]).slice(0,120) : (engines==='무음' ? '오디오가 무음으로 판단되어 전사를 건너뜀' : '');
     await put('transcripts', {
       id: meetingId, title: cp.title, topic: cp.topic, startedAt: cp.startedAt,
       segments: allSegs, createdAt: Date.now(),
