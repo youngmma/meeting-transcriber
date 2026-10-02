@@ -121,9 +121,9 @@ if ('serviceWorker' in navigator) {
       <h2>새 회의 녹음</h2>
       <label class="lbl" for="topicInput">주제 (선택)</label>
       <input type="text" id="topicInput" placeholder="예: 주간팀미팅" maxlength="50" autocomplete="off">
-      <div class="kbd-note">매번 직접 시작해야 합니다 (브라우저 보안 정책상 자동 녹음 불가).
-      시작하면 화면 공유 선택에서 <b>오디오 공유</b>를 꼭 켜세요.
-      이 공유는 이 브라우저에서 소리를 듣기 위한 것으로, 회의 상대방에게는 공유되거나 알림이 가지 않습니다.</div>
+      <div class="kbd-note">매번 직접 시작해야 합니다 (브라우저 보안 정책상 자동 녹음 불가).<br>
+      ① "녹음 시작" → ② 공유 범위에서 <b>"화면 전체"</b> 선택 → ③ <b>"시스템 오디오 공유" 체크</b> → ④ 공유 → ⑤ 마이크 허용.<br>
+      이 공유는 이 브라우저에서 소리를 듣기 위한 것으로, 회의 상대방에게는 공유되거나 알림이 가지 않습니다. Teams를 전체화면으로 띄울 필요는 없습니다 (최소화해도 됩니다).</div>
       <button class="btn btn-primary" id="btnStart" type="button">녹음 시작</button>
       <div class="banner err" id="permErr"></div>
     </div>
