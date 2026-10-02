@@ -81,6 +81,10 @@ label.lbl{display:block; font-size:14px; font-weight:700; margin:12px 0 6px}
 .seg .ts{font-size:12px; color:var(--muted); cursor:pointer; text-decoration:underline;
   text-underline-offset:2px; background:none; border:none; padding:0; font-family:inherit}
 .seg .ts:disabled{color:#b6bdc7; text-decoration:none; cursor:default}
+.seg .editbtn{font-size:12px; color:var(--muted); cursor:pointer; background:none; border:none; padding:2px 4px; margin-left:4px}
+.seg .editbtn:hover{color:var(--accent)}
+.seg .editarea{width:100%; font-size:15px; line-height:1.7; padding:8px; border:1px solid var(--accent); border-radius:8px; margin-top:6px; font-family:inherit}
+.seg .editrow{margin-top:6px}
 .seg .ts:not(:disabled):active{color:var(--accent)}
 .kbd-note{font-size:13px; color:var(--muted); background:var(--surface); border:1px dashed var(--border);
   border-radius:10px; padding:10px 12px; margin:10px 0}
@@ -483,22 +487,22 @@ const Engines = {
     return Math.sqrt(s/(n/7)) < th;
   },
 
-  /** 한 청크 전사 → [{start,end,text}] (청크 내 상대 시간) */
+  /** 한 청크 전사 → {segs:[{start,end,text}] (청크 내 상대 시간), engine} */
   async transcribeChunk(pcm){
-    if (this.isSilent(pcm)) return [];
+    if (this.isSilent(pcm)) return { segs:[], engine:'none' };
     // primary: parakeet
     try {
       const m = await this.ensureParakeet();
       const r = await m.transcribe(pcm, 16000, { returnTimestamps:true, returnConfidences:true, frameStride:1 });
       const words = (r.words||[]).filter(w=>w.confidence==null || w.confidence>0.15);
-      return groupWords(words.map(w=>({start:w.start_time, end:w.end_time, text:w.text})));
+      return { segs: groupWords(words.map(w=>({start:w.start_time, end:w.end_time, text:w.text}))), engine:'parakeet' };
     } catch(e){ console.error('parakeet 실패, whisper 폴백:', e); }
     // fallback: whisper
     const asr = await this.ensureWhisper();
     const out = await asr(pcm, { chunk_length_s:30, stride_length_s:5,
       language:'english', task:'transcribe', return_timestamps:true });
     const segs = (out.chunks||[]).map(c=>({ start:c.timestamp[0], end:c.timestamp[1], text:c.text }));
-    return filterHallucinations(segs);
+    return { segs: filterHallucinations(segs), engine:'whisper' };
   }
 };
 
@@ -637,14 +641,16 @@ const App = {
     try {
       const pcm = await Engines.resample16k(rec.blob);
       const offset = chunkIndex * CHUNK_SEC;
-      const segs = await Engines.transcribeChunk(pcm);
+      const { segs, engine } = await Engines.transcribeChunk(pcm);
       // 절대 시간으로 변환 + 화자 판정 (세션 에너지 사용)
       const cp = await get('checkpoints', meetingId);
       const abs = segs.map(s=>({ start:s.start+offset, end:s.end+offset, text:s.text }));
       const labeled = attributeSpeakers(abs, App.energyOf(meetingId).mic, App.energyOf(meetingId).sys);
       const byChunk = (cp && cp.segmentsByChunk) || {};
+      const engByChunk = (cp && cp.enginesByChunk) || {};
       byChunk[chunkIndex] = labeled;
-      await put('checkpoints', { ...(cp||{}), meetingId, segmentsByChunk:byChunk });
+      engByChunk[chunkIndex] = engine;
+      await put('checkpoints', { ...(cp||{}), meetingId, segmentsByChunk:byChunk, enginesByChunk:engByChunk });
     } catch(e){ console.error('청크 전사 실패', chunkIndex, e); }
   },
 
@@ -689,13 +695,36 @@ const App = {
   async finalize(meetingId){
     const cp = await get('checkpoints', meetingId);
     if (!cp) return;
-    const allSegs = Object.entries(cp.segmentsByChunk||{})
-      .sort((a,b)=>a[0]-b[0]).flatMap(([,s])=>s)
-      .sort((a,b)=>a.start-b.start);
+    // 청크 순서대로 이어붙이되, 경계에서 끊긴 문장은 합치기
+    const chunkEntries = Object.entries(cp.segmentsByChunk||{})
+      .sort((a,b)=>Number(a[0])-Number(b[0]));
+    const allSegs = [];
+    let prevIdx = null;
+    for (const [idxStr, segs] of chunkEntries){
+      const idx = Number(idxStr);
+      const sorted = [...segs].sort((a,b)=>a.start-b.start);
+      if (prevIdx!==null && idx===prevIdx+1 && allSegs.length && sorted.length){
+        const p = allSegs[allSegs.length-1], c = sorted[0];
+        const continuable = p.speaker===c.speaker
+          && !/[.!?…]$/.test(p.text.trim())
+          && (c.start - p.end) >= 0 && (c.start - p.end) < 8;
+        if (continuable){
+          p.text = p.text.trim() + ' ' + c.text.trim();
+          p.end = c.end;
+          sorted.shift();
+        }
+      }
+      allSegs.push(...sorted);
+      prevIdx = idx;
+    }
+    allSegs.sort((a,b)=>a.start-b.start);
+    // 사용된 전사 엔진 요약 (parakeet / whisper / 혼합)
+    const engVals = Object.values(cp.enginesByChunk||{}).filter(e=>e && e!=='none');
+    const engines = [...new Set(engVals)].join('+') || '알 수 없음';
     await put('transcripts', {
       id: meetingId, title: cp.title, topic: cp.topic, startedAt: cp.startedAt,
       segments: allSegs, createdAt: Date.now(),
-      segCount: allSegs.length,
+      segCount: allSegs.length, engines,
     });
     await put('checkpoints', { ...cp, status:'done' });
     // 정책이 즉시폐기면 오디오 바로 정리
@@ -819,11 +848,12 @@ async function openReader(id){
   currentReadId = id;
   $('readTitle').textContent = t.title;
   const dur = t.segments.length ? t.segments[t.segments.length-1].end : 0;
-  $('readMeta').textContent = `${fmtClock(t.startedAt)} · ${t.segments.length}개 구간 · 약 ${fmtDur(dur)}`;
+  $('readMeta').textContent = `${fmtClock(t.startedAt)} · ${t.segments.length}개 구간 · 약 ${fmtDur(dur)}` + (t.engines ? ` · 전사: ${t.engines}` : '');
   const box = $('segList'); box.innerHTML='';
   const auds = await all('audio');
   const hasAudio = auds.some(a=>a.meetingId===id);
-  for (const s of t.segments){
+  for (let i=0; i<t.segments.length; i++){
+    const s = t.segments[i];
     const div = document.createElement('div'); div.className='seg';
     const spk = document.createElement('span');
     spk.className = 'spk ' + (s.speaker==='나'?'me':s.speaker==='상대방'?'them':'unk');
@@ -834,7 +864,29 @@ async function openReader(id){
     ts.title = hasAudio ? '해당 구간 듣기' : '오디오 삭제됨';
     if (hasAudio) ts.onclick = ()=>App.playSegmentAt(id, s.start);
     const tx = document.createElement('span'); tx.textContent = ' ' + s.text;
-    div.append(spk, ts, tx);
+    const eb = document.createElement('button'); eb.className='editbtn'; eb.type='button';
+    eb.textContent = '✎'; eb.title = '텍스트 수정';
+    eb.onclick = ()=>{
+      const ta = document.createElement('textarea');
+      ta.value = s.text; ta.className='editarea'; ta.rows=3;
+      const row = document.createElement('div'); row.className='editrow';
+      const sv = document.createElement('button'); sv.type='button'; sv.className='btn btn-ghost btn-small'; sv.textContent='저장';
+      const ca = document.createElement('button'); ca.type='button'; ca.className='btn btn-ghost btn-small'; ca.textContent='취소';
+      row.append(sv, ca);
+      tx.style.display='none'; eb.style.display='none';
+      div.append(ta, row);
+      ta.focus();
+      sv.onclick = async ()=>{
+        const nt = ta.value.trim();
+        if (nt && nt!==s.text){
+          const tt = await get('transcripts', id);
+          if (tt && tt.segments[i]){ tt.segments[i].text = nt; await put('transcripts', tt); }
+        }
+        openReader(id);
+      };
+      ca.onclick = ()=>openReader(id);
+    };
+    div.append(spk, ts, tx, eb);
     box.appendChild(div);
   }
   showScreen('scr-read');
