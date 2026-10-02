@@ -122,7 +122,8 @@ if ('serviceWorker' in navigator) {
       <label class="lbl" for="topicInput">주제 (선택)</label>
       <input type="text" id="topicInput" placeholder="예: 주간팀미팅" maxlength="50" autocomplete="off">
       <div class="kbd-note">매번 직접 시작해야 합니다 (브라우저 보안 정책상 자동 녹음 불가).
-      시작하면 화면 공유 선택에서 <b>오디오 공유</b>를 꼭 켜세요.</div>
+      시작하면 화면 공유 선택에서 <b>오디오 공유</b>를 꼭 켜세요.
+      이 공유는 이 브라우저에서 소리를 듣기 위한 것으로, 회의 상대방에게는 공유되거나 알림이 가지 않습니다.</div>
       <button class="btn btn-primary" id="btnStart" type="button">녹음 시작</button>
       <div class="banner err" id="permErr"></div>
     </div>
@@ -160,6 +161,7 @@ if ('serviceWorker' in navigator) {
   <section class="screen" id="scr-list">
     <div class="card">
       <div class="muted" style="margin-bottom:8px">브라우저 데이터는 회사 정책으로 삭제될 수 있습니다. 중요한 회의는 파일로 다운로드하세요.</div>
+      <div class="banner info" id="autoDlNote"></div>
       <input type="search" id="searchInput" placeholder="전사본 검색 (키워드)" autocomplete="off">
     </div>
     <div class="card" id="meetList"><div class="muted">불러오는 중…</div></div>
@@ -186,7 +188,8 @@ if ('serviceWorker' in navigator) {
       <label class="lbl" for="audioPolicy">녹음본 보관 정책</label>
       <select id="audioPolicy">
         <option value="immediate">전사 완료 후 즉시 폐기</option>
-        <option value="7days" selected>7일 후 자동 폐기</option>
+        <option value="3days" selected>3일 후 자동 폐기</option>
+        <option value="7days">7일 후 자동 폐기</option>
         <option value="keep">영구 보관</option>
       </select>
       <div class="muted" style="margin-top:6px">전사본은 항상 보관됩니다. 녹음본만 이 정책으로 정리됩니다.</div>
@@ -223,7 +226,8 @@ function sanitizeTopic(topic) { return String(topic||'').replace(/\s+/g,' ').tri
 function audioExpiryDate(recordedAt, policy) {
   if (policy === 'keep') return null;
   if (policy === 'immediate') return new Date(recordedAt.getTime());
-  return new Date(recordedAt.getTime() + 7*24*60*60*1000);
+  const days = policy === '3days' ? 3 : 7;
+  return new Date(recordedAt.getTime() + days*24*60*60*1000);
 }
 function shouldDeleteAudio(recordedAt, now, policy) {
   const e = audioExpiryDate(recordedAt, policy);
@@ -595,7 +599,7 @@ const App = {
     const m = this.meeting;
     m.chunksTotal++;
     const settings = await get('settings','audioPolicy');
-    const policy = settings ? settings.v : '7days';
+    const policy = settings ? settings.v : '3days';
     const recordedAt = new Date();
     await put('audio', { meetingId:m.id, chunkIndex:idx, blob,
       recordedAt:recordedAt.getTime(),
@@ -669,6 +673,16 @@ const App = {
       this.meeting = null;
       window.onbeforeunload = null;
       showScreen('scr-list'); renderList();
+      try {
+        const adl = sessionStorage.getItem('mt-autodl');
+        if (adl){
+          sessionStorage.removeItem('mt-autodl');
+          const n = $('autoDlNote');
+          n.textContent = `전사 완료. "${adl}.txt" 파일이 자동 다운로드되었습니다. 받지 못했다면 전사본을 열어 txt 다운로드를 눌러주세요.`;
+          n.classList.add('show');
+          setTimeout(()=>n.classList.remove('show'), 15000);
+        }
+      } catch(_){}
     }
   },
 
@@ -690,6 +704,14 @@ const App = {
       const auds = await all('audio');
       for (const a of auds.filter(x=>x.meetingId===meetingId)) await del('audio',[a.meetingId,a.chunkIndex]);
     }
+    // 전사 완료 → txt 자동 다운로드 (브라우저가 차단하면 목록의 다운로드 버튼 사용)
+    try {
+      const t = await get('transcripts', meetingId);
+      if (t && t.segments && t.segments.length){
+        download(t.title+'.txt', txtOf(t), 'text/plain;charset=utf-8');
+        try { sessionStorage.setItem('mt-autodl', t.title); } catch(_){}
+      }
+    } catch(e){ console.warn('자동 다운로드 실패', e); }
   },
 
   /** 크래시 복구: 중단된 세션 제안 */
@@ -718,7 +740,7 @@ const App = {
   /** 보관 정책 스윕 */
   async sweepRetention(){
     const settings = await get('settings','audioPolicy');
-    const policy = settings ? settings.v : '7days';
+    const policy = settings ? settings.v : '3days';
     const now = new Date();
     const auds = await all('audio');
     for (const a of auds){
@@ -856,7 +878,7 @@ async function init(){
   };
   // 설정
   const st = await get('settings','audioPolicy');
-  $('audioPolicy').value = st ? st.v : '7days';
+  $('audioPolicy').value = st ? st.v : '3days';
   $('audioPolicy').onchange = async e=>{
     await put('settings',{k:'audioPolicy', v:e.target.value});
   };
