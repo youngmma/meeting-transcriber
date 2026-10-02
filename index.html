@@ -831,7 +831,7 @@ const App = {
     const card = $('recoveryCard');
     const auds = (await all('audio')).filter(a=>a.meetingId===meetingId)
       .sort((a,b)=>a.chunkIndex-b.chunkIndex);
-    if (!auds.length){ alert('복구할 오디오가 없습니다.'); return; }
+    if (!auds.length && !Object.keys(cp.segmentsByChunk||{}).length){ alert('복구할 오디오가 없습니다.'); return; }
     const doneIdx = new Set(Object.keys(cp.segmentsByChunk||{}).map(Number));
     for (const a of auds) if (!doneIdx.has(a.chunkIndex)) this.queue.push({meetingId, chunkIndex:a.chunkIndex});
     this.meeting = { id:meetingId, chunksDone:doneIdx.size, chunksTotal:auds.length, recovering:true };
