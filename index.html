@@ -445,6 +445,7 @@ const AudioCap = {
   ctx:null, displayStream:null, micStream:null, mixedDest:null,
   recorder:null, analysers:{}, energy:{mic:[],sys:[]}, recStart:0,
   chunkIndex:0, onChunk:null, onLevel:null, onTrackLost:null, meterTimer:0, elapsedTimer:0,
+  chunkTimer:0, mimeType:'', stopping:false,
 
   async start(){
     // 1) system audio (others) — skipped on devices without getDisplayMedia (e.g. iPad Safari): mic-only
@@ -497,7 +498,9 @@ const AudioCap = {
 
   /** Clean up open tracks on partial failure (e.g. screen share OK, mic denied) */
   abort(){
+    clearInterval(this.chunkTimer);
     clearInterval(this.meterTimer);
+    this.stopping = true;
     try{ if (this.recorder && this.recorder.state!=='inactive') this.recorder.stop(); }catch(_){}
     for (const s of [this.displayStream, this.micStream])
       if (s) s.getTracks().forEach(t=>{ try{t.stop();}catch(_){} });
@@ -506,13 +509,36 @@ const AudioCap = {
   },
 
   startRecorder(){
-    const stream = this.mixedDest.stream;
     const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : '';
-    this.recorder = new MediaRecorder(stream, mime ? { mimeType:mime } : undefined);
-    this.recorder.ondataavailable = e=>{
-      if (e.data && e.data.size > 0) this.onChunk && this.onChunk(e.data, this.chunkIndex++);
-    };
-    this.recorder.start(CHUNK_SEC*1000);
+    this.mimeType = mime;
+    this.stopping = false;
+    this.startChunkRecorder();
+    // Rotate the recorder every 5 minutes. Each chunk must be a standalone valid
+    // WebM file: MediaRecorder.start(timeslice) only writes the init segment into
+    // the FIRST blob, so later blobs fail decodeAudioData ("Unable to decode audio
+    // data") and only the first 5 minutes ever transcribe. Stop/start avoids that.
+    this.chunkTimer = setInterval(()=>{ this.rotateChunk(); }, CHUNK_SEC*1000);
+  },
+
+  startChunkRecorder(){
+    const stream = this.mixedDest.stream;
+    this.recorder = new MediaRecorder(stream, this.mimeType ? { mimeType:this.mimeType } : undefined);
+    this.recorder.start(); // no timeslice → one complete, decodable file per chunk
+  },
+
+  async rotateChunk(){
+    if (this.stopping) return;
+    const old = this.recorder;
+    // Start the new recorder first (tiny overlap beats a gap), then stop the old one.
+    this.startChunkRecorder();
+    if (old && old.state !== 'inactive'){
+      const blob = await new Promise(res=>{
+        old.ondataavailable = e=>res(e.data && e.data.size>0 ? e.data : null);
+        try { old.stop(); } catch(_){ res(null); }
+      });
+      if (blob && this.onChunk) this.onChunk(blob, this.chunkIndex++);
+    }
+    // old was null/inactive → we just started fresh, nothing to save
   },
 
   startMeters(){
@@ -534,12 +560,14 @@ const AudioCap = {
   },
 
   async stop(){
+    clearInterval(this.chunkTimer);
     clearInterval(this.meterTimer);
+    this.stopping = true;
     const last = await new Promise(res=>{
       if (!this.recorder || this.recorder.state==='inactive') return res(null);
       this.recorder.ondataavailable = e=>res(e.data && e.data.size>0 ? e.data : null);
       this.recorder.onstop = ()=>{};
-      this.recorder.stop();
+      try { this.recorder.stop(); } catch(_){ res(null); }
     });
     const tracks = [];
     if (this.displayStream) tracks.push(...this.displayStream.getTracks());
@@ -945,6 +973,10 @@ const App = {
       await put('checkpoints', { ...(cp||{}), meetingId, segmentsByChunk:byChunk, enginesByChunk:engByChunk });
     } catch(e){
       console.error('Chunk transcription failed', chunkIndex, e);
+      // A tiny trailing chunk (< ~2s of audio, e.g. user stopped right after a
+      // 5-minute rotation) may not decode — skip silently instead of flagging an error.
+      const tiny = rec.blob && rec.blob.size < 12000;
+      if (tiny) return;
       try {
         const cp2 = await get('checkpoints', meetingId);
         if (cp2){
