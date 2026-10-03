@@ -207,14 +207,7 @@ if ('serviceWorker' in navigator) {
       <div class="muted" id="micOnlyNote" style="display:none;margin-top:8px">This device doesn't support screen sharing, so recording is mic-only. Meeting audio reaches the mic through the speaker — turn the volume up.</div>
       <div class="banner err" id="permErr"></div>
     </div>
-    <details class="card" id="modelDetails">
-      <summary class="collapse-head"><h2>Transcription model status</h2><span class="chev">▸</span></summary>
-      <div class="muted" id="modelStatus">Checking…</div>
-      <div class="progress" id="modelProgWrap" style="display:none"><div id="modelProg"></div></div>
-      <button class="btn btn-primary" id="btnPreload" type="button">Pre-download high-quality model (661MB, for high-spec PCs)</button>
-      <div class="muted" style="margin-top:6px">Pre-downloading makes transcription more accurate and faster.
-      You can start recording right away without it — a lighter model will be used.</div>
-    </details>
+
     <details class="card">
       <summary class="collapse-head"><h2>Instructions</h2><span class="chev">▸</span></summary>
       <div class="muted">① "Start recording"<br>
@@ -290,7 +283,6 @@ if ('serviceWorker' in navigator) {
         <option value="Xenova/whisper-small">Accurate (slower, whisper-small)</option>
       </select>
       <div class="muted" style="margin-top:6px">Both auto-detect Korean and English. Use Fast mode to shorten transcription time for long recordings.</div>
-      <div class="muted" id="engineInfo" style="margin-top:8px">-</div>
     </div>
     <div class="card">
       <h2>Diagnostics</h2>
@@ -299,10 +291,9 @@ if ('serviceWorker' in navigator) {
     </div>
   </section>
 </main>
-<footer class="foot">© 2026 Young Ma with Muse · Private use · Audio never leaves this device</footer>
+<footer class="foot">© 2026 Young Ma Studio · Private use · Audio never leaves this device</footer>
 <script type="importmap">
 { "imports": {
-  "parakeet.js": "https://cdn.jsdelivr.net/npm/parakeet.js@1.4.4/src/index.js",
   "onnxruntime-web": "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.1/dist/ort.min.mjs"
 } }
 </script>
@@ -585,49 +576,13 @@ const AudioCap = {
 
 /* ============ transcription engines ============ */
 const Engines = {
-  parakeet:null, whisper:null, parakeetReady:false, whisperReady:false, whisperWorkerReady:false,
-  parakeetCached:false, whisperCached:false, // files cached (installed). Session is created at transcription time
+  whisper:null, whisperReady:false, whisperWorkerReady:false,
+  whisperCached:false, // files cached (installed). Session is created at transcription time
   onProgress:null, // (engine, file, loaded, total) => void
 
   /** Pre-download: download files + IndexedDB cache only. No ORT session (saves memory, avoids crash) */
-  async preloadParakeet(){
-    if (this.parakeetCached) return true;
-    const { getParakeetModel } = await import('parakeet.js');
-    const perFile = {};
-    const prog = (p)=>{
-      perFile[p.file] = p;
-      let l=0,t=0;
-      for (const k in perFile){ l+=perFile[k].loaded||0; t+=perFile[k].total||0; }
-      this.onProgress && this.onProgress('parakeet', 'total', l, t);
-    };
-    const result = await getParakeetModel('parakeet-tdt-0.6b-v2', {
-      backend:'wasm', cpuThreads:4, encoderQuant:'int8', decoderQuant:'int8',
-      preprocessor:'nemo128', progress:prog,
-    });
-    // release blob URL → free memory (files stay in IndexedDB)
-    if (result && result.urls) for (const k in result.urls){ try{ URL.revokeObjectURL(result.urls[k]); }catch(_){} }
-    this.parakeetCached = true;
-    try{ localStorage.setItem('mt_model_parakeet','1'); }catch(_){}
-    return true;
-  },
-
-  /** Check cache at startup: show 'Installed' for previously downloaded models */
+  /** Check cache at startup for previously downloaded whisper model */
   async checkCache(){
-    try{
-      const db = await new Promise((res,rej)=>{
-        const r = indexedDB.open('parakeet-cache-db', 1);
-        r.onsuccess = ()=>res(r.result); r.onerror = rej;
-      });
-      const keys = await new Promise((res,rej)=>{
-        const tx = db.transaction(['file-store'],'readonly');
-        const r = tx.objectStore('file-store').getAllKeys();
-        r.onsuccess = ()=>res(r.result||[]); r.onerror = rej;
-      });
-      db.close();
-      const need = ['encoder-model.int8.onnx','decoder_joint-model.int8.onnx','vocab.txt'];
-      this.parakeetCached = need.every(f=>keys.some(k=>String(k).endsWith(f)));
-    }catch(_){ this.parakeetCached = false; }
-    if (!this.parakeetCached){ try{ this.parakeetCached = localStorage.getItem('mt_model_parakeet')==='1'; }catch(_){} }
     try{
       const c = await caches.open('meeting-transcriber-whisper');
       const keys = await c.keys();
@@ -635,20 +590,6 @@ const Engines = {
       const mid = this.whisperModel || 'Xenova/whisper-base';
       this.whisperCached = keys.some(k=>k.url.includes('/'+mid+'/') && !k.url.includes('.en/'));
     }catch(_){ this.whisperCached = false; }
-  },
-
-  async ensureParakeet(){
-    if (this.parakeetReady) return this.parakeet;
-    const { fromHub } = await import('parakeet.js');
-    const prog = (p)=>{ this.onProgress && this.onProgress('parakeet', p.file, p.loaded, p.total); };
-    this.parakeet = await fromHub('parakeet-tdt-0.6b-v2', {
-      backend:'wasm', cpuThreads:4, encoderQuant:'int8', decoderQuant:'int8',
-      preprocessor:'nemo128', progress:prog,
-    });
-    this.parakeetReady = true;
-    this.parakeetCached = true;
-    try{ localStorage.setItem('mt_model_parakeet','1'); }catch(_){}
-    return this.parakeet;
   },
 
   whisperModel:'Xenova/whisper-base', // changeable in settings (whisper-small=accurate)
@@ -771,16 +712,6 @@ const Engines = {
    *  onWin(done,total): per-30s-window progress callback */
   async transcribeChunk(pcm, onWin){
     if (this.isSilent(pcm)) return { segs:[], engine:'none' };
-    // parakeet (661MB) only on high-spec PCs that pre-downloaded it; skipped on low-memory PCs to avoid tab crashes
-    if (this.parakeetCached){
-      try {
-        const m = await this.ensureParakeet();
-        const r = await m.transcribe(pcm, 16000, { returnTimestamps:true, returnConfidences:true, frameStride:1 });
-        const words = (r.words||[]).filter(w=>w.confidence==null || w.confidence>0.15);
-        onWin && onWin(1,1);
-        return { segs: groupWords(words.map(w=>({start:w.start_time, end:w.end_time, text:w.text}))), engine:'parakeet' };
-      } catch(e){ console.error('Parakeet failed, whisper fallback:', e); }
-    }
     // whisper: split into 30s windows directly → per-window progress + worker inference (no page freeze)
     // repeat hallucinations blocked twice: worker no_repeat_ngram_size + collapseRepeats here
     const SR=16000, WIN=30*SR, STEP=25*SR, OVERLAP=5;
@@ -1081,7 +1012,7 @@ const App = {
       prevIdx = idx;
     }
     allSegs.sort((a,b)=>a.start-b.start);
-    // summary of engines used (parakeet / whisper / mixed)
+    // summary of engines used
     const engVals = Object.values(cp.enginesByChunk||{}).filter(e=>e && e!=='none');
     const errs = Object.values(cp.transcribeErrors||{});
     const engKeys = Object.keys(cp.enginesByChunk||{});
@@ -1287,19 +1218,6 @@ function txtOf(t){
   return lines.join('\n');
 }
 
-async function refreshModelStatus(){
-  const el = $('modelStatus');
-  const parts = [];
-  parts.push('High quality (parakeet): ' + (Engines.parakeetReady||Engines.parakeetCached ? 'Installed ✓' : 'Not downloaded'));
-  const wname = (Engines.whisperModel||'').split('/').pop() || 'whisper-base';
-  parts.push(`Default (${wname}): ` + (Engines.whisperReady||Engines.whisperCached ? 'Installed ✓' : 'Not downloaded'));
-  el.innerHTML = parts.map(esc).join('<br>');
-  $('engineInfo').innerHTML = parts.map(esc).join('<br>') +
-    '<br>No WebGPU → running on WASM.';
-  const bp = $('btnPreload');
-  if (bp && (Engines.parakeetReady||Engines.parakeetCached)){ bp.textContent = 'High-quality model installed ✓'; bp.disabled = true; }
-}
-
 async function init(){
   // screen switching
   $('brandHome').onclick = ()=>showScreen('scr-start');
@@ -1337,45 +1255,20 @@ async function init(){
     await put('settings',{k:'whisperModel', v:e.target.value});
     Engines.resetWhisperWorker(); // load the new model from the next transcription
     await Engines.checkCache();
-    await refreshModelStatus();
   };
   $('btnWipe').onclick = async ()=>{
     if (!confirm('Really delete all data? This cannot be undone.')) return;
     for (const s of ['transcripts','audio','checkpoints','settings']) await clearStore(s);
     alert('Deleted.'); showScreen('scr-start');
   };
-  // model pre-download
-  Engines.onProgress = (engine,file,loaded,total)=>{
-    $('modelProgWrap').style.display='block';
-    const pct = total>0 ? Math.round(loaded/total*100) : 0;
-    $('modelProg').style.width = pct+'%';
-    $('modelStatus').textContent = `${engine} downloading… ${pct}% (${file})`;
-  };
-  $('btnPreload').onclick = async ()=>{
-    const btn = $('btnPreload');
-    if (Engines.parakeetReady||Engines.parakeetCached) return;
-    const det = $('modelDetails'); if (det) det.open = true; // expand so the download progress is visible
-    btn.disabled = true;
-    btn.textContent = 'Preparing model…';
-    // instant click feedback: engine-loading has no file progress, so show immediately
-    $('modelProgWrap').style.display='block';
-    $('modelStatus').textContent = 'Loading engine… (the first step may take a while — keep this tab open)';
-    try {
-      await Engines.preloadParakeet(); // download + cache only, no session
-      btn.textContent = 'High-quality model installed ✓';
-    }
-    catch(e){
-      alert('Model download failed: '+(e&&e.message||e));
-      btn.textContent = 'Pre-download high-quality model (661MB, for high-spec PCs)';
-      btn.disabled = false;
-    }
-    $('modelProgWrap').style.display='none';
-    refreshModelStatus();
-  };
 
   await App.sweepRetention();
-  await Engines.checkCache(); // show 'Installed' for previously downloaded models
-  await refreshModelStatus();
+  await Engines.checkCache(); // whisper cache status
+  // cleanup: remove leftover parakeet cache (feature removed; free ~661MB)
+  (async()=>{
+    try{ indexedDB.deleteDatabase('parakeet-cache-db'); }catch(_){}
+    try{ localStorage.removeItem('mt_model_parakeet'); }catch(_){}
+  })();
   await App.checkRecovery();
   // request storage persistence (prevent eviction)
   if (navigator.storage && navigator.storage.persist){
