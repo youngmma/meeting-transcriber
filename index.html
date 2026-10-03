@@ -37,6 +37,12 @@ main{max-width:720px; margin:0 auto; padding:16px 16px 96px}
 .card{background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
   padding:16px; margin-bottom:12px}
 .card h2{font-size:16px; margin:0 0 8px}
+.collapse-head{cursor:pointer; list-style:none; display:flex; align-items:center; justify-content:space-between}
+.collapse-head::-webkit-details-marker{display:none}
+.collapse-head h2{margin:0}
+.collapse-head .chev{color:var(--muted); transition:transform .15s}
+details[open] .collapse-head .chev{transform:rotate(90deg)}
+details.card summary + *{margin-top:8px}
 .muted{color:var(--muted); font-size:14px}
 .btn{display:block; width:100%; border:none; border-radius:var(--radius); cursor:pointer;
   font-size:17px; font-weight:700; padding:15px; margin:8px 0; font-family:inherit}
@@ -140,14 +146,14 @@ if ('serviceWorker' in navigator) {
       <div class="muted" id="micOnlyNote" style="display:none;margin-top:8px">이 기기는 화면 공유를 지원하지 않아 마이크로만 녹음됩니다. 회의 소리는 스피커를 통해 마이크에 담기니 볼륨을 키워 두세요.</div>
       <div class="banner err" id="permErr"></div>
     </div>
-    <div class="card">
-      <h2>전사 모델 상태</h2>
+    <details class="card" id="modelDetails">
+      <summary class="collapse-head"><h2>전사 모델 상태</h2><span class="chev">▸</span></summary>
       <div class="muted" id="modelStatus">확인 중…</div>
       <div class="progress" id="modelProgWrap" style="display:none"><div id="modelProg"></div></div>
       <button class="btn btn-primary" id="btnPreload" type="button">고품질 모델 미리 받기 (661MB, 고사양 PC용)</button>
       <div class="muted" style="margin-top:6px">모델을 받아두면 회의 중 전사가 더 정확하고 빨라집니다.
       받지 않아도 녹음은 바로 시작되고, 가벼운 모델로 전사됩니다.</div>
-    </div>
+    </details>
     <div class="card">
       <h2>알아두기</h2>
       <div class="muted">- 오디오는 이 기기를 떠나지 않습니다. 전사도 여기서 합니다.<br>
@@ -1227,6 +1233,7 @@ async function init(){
   $('btnPreload').onclick = async ()=>{
     const btn = $('btnPreload');
     if (Engines.parakeetReady||Engines.parakeetCached) return;
+    const det = $('modelDetails'); if (det) det.open = true; // 다운로드 진행률이 보이게 펼침
     btn.disabled = true;
     btn.textContent = '모델 준비 중…';
     // 클릭 즉시 피드백: 엔진 로딩 단계에서는 파일 진행률이 없어 바로 표시
