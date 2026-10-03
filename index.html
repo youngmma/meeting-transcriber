@@ -581,7 +581,7 @@ const AudioCap = {
 
 /* ============ transcription engines ============ */
 const Engines = {
-  parakeet:null, whisper:null, parakeetReady:false, whisperReady:false,
+  parakeet:null, whisper:null, parakeetReady:false, whisperReady:false, whisperWorkerReady:false,
   parakeetCached:false, whisperCached:false, // files cached (installed). Session is created at transcription time
   onProgress:null, // (engine, file, loaded, total) => void
 
@@ -673,7 +673,7 @@ const Engines = {
         w.addEventListener('error', herr);
       });
       w.postMessage({ type:'init', model });
-      try { return await ready; }
+      try { const wr = await ready; this.whisperWorkerReady = true; return wr; }
       catch(e){ console.warn('Worker init failed, falling back to main thread:', e);
         try{ w.terminate(); }catch(_){} this._worker=null; return null; }
     })();
@@ -684,6 +684,7 @@ const Engines = {
   resetWhisperWorker(){
     try{ this._worker && this._worker.terminate(); }catch(_){}
     this._worker=null; this._workerReady=null; this.whisperReady=false; this.whisper=null;
+    this.whisperWorkerReady=false;
   },
 
   /** Language detection from 30s of PCM → 'ko'/'en'. Falls back to 'en' */
@@ -783,10 +784,14 @@ const Engines = {
     for (let s=0; s<pcm.length; s+=STEP) starts.push(s);
     // language detection (once per chunk, first window). Without it transformers.js pins to English,
     // which turns Korean speech into English translations ("No language specified - defaulting to English")
-    let lang='en';
-    try {
-      lang = await this.detectLanguage(pcm.slice(0, Math.min(WIN, pcm.length)));
-    } catch(e){ console.warn('Language detection failed, defaulting to English:', e); }
+    // Cache across chunks: same session = same language, skip re-detection (~10s saved per chunk).
+    let lang = this._sessionLang || 'en';
+    if (!this._sessionLang){
+      try {
+        lang = await this.detectLanguage(pcm.slice(0, Math.min(WIN, pcm.length)));
+        this._sessionLang = lang;
+      } catch(e){ console.warn('Language detection failed, defaulting to English:', e); }
+    }
     const segs=[];
     for (let i=0;i<starts.length;i++){
       const s=starts[i];
@@ -830,6 +835,11 @@ const App = {
 
   async startRecording(){
     hideBanner('permErr');
+    // Pre-download whisper model NOW (while user handles permission popups),
+    // so background transcription of chunk 1 starts immediately at 5:00
+    // instead of waiting for a 77MB download mid-recording.
+    Engines.ensureWhisperWorker().catch(()=>{});
+    Engines._sessionLang = null; // reset language cache for new session
     const topic = $('topicInput').value;
     // 1) capture (permission popup)
     let cap;
@@ -921,6 +931,11 @@ const App = {
 
   updateTxProg(){
     if (!this.meeting) return;
+    // If whisper model is still downloading, show that instead of a stuck "0/N chunks"
+    if (!Engines.whisperWorkerReady && !Engines.whisperReady){
+      const tp0 = $('txProg'); if (tp0) tp0.textContent = 'Downloading transcription model…';
+      return;
+    }
     const w = this.txWin; // {d, t} per-30s-window progress of the current chunk
     const winTxt = (w && w.t>1) ? ` · part ${w.d}/${w.t}` : '';
     const txt = this.meeting.chunksDone >= this.meeting.chunksTotal && this.meeting.chunksTotal>0
