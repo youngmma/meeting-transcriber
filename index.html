@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>미팅 전사</title>
-<meta name="description" content="회사 회의를 녹음하고 브라우저 안에서 전사하는 개인용 도구. 오디오는 기기를 떠나지 않습니다.">
+<title>Meeting Transcriber</title>
+<meta name="description" content="A personal tool for recording meetings and transcribing them in the browser. Audio never leaves the device.">
 <meta name="theme-color" content="#1f3a5f">
 <link rel="manifest" href="./manifest.json">
 <link rel="icon" type="image/svg+xml" href="./icons/icon.svg">
@@ -111,7 +111,7 @@ footer.foot{max-width:720px; margin:0 auto; padding:0 16px 32px; color:var(--mut
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', function () {
     navigator.serviceWorker.register('./sw.js').catch(function (e) {
-      console.warn('서비스 워커 등록 실패:', e);
+      console.warn('Service worker registration failed:', e);
     });
   });
 }
@@ -119,119 +119,119 @@ if ('serviceWorker' in navigator) {
 </head>
 <body>
 <header class="top">
-  <h1 id="brandHome" style="cursor:pointer" title="홈으로">Meeting Transcriber</h1>
+  <h1 id="brandHome" style="cursor:pointer" title="Home">Meeting Transcriber</h1>
   <div class="spacer"></div>
-  <button class="icon-btn" id="navList" type="button">목록</button>
-  <button class="icon-btn" id="navSettings" type="button">설정</button>
+  <button class="icon-btn" id="navList" type="button">List</button>
+  <button class="icon-btn" id="navSettings" type="button">Settings</button>
 </header>
 <main>
-  <!-- 시작 화면 -->
+  <!-- start screen -->
   <section class="screen active" id="scr-start">
     <div class="card" id="recoveryCard" style="display:none;border-left:4px solid #e6a23c">
-      <h2>중단된 녹음</h2>
+      <h2>Interrupted recording</h2>
       <div class="muted" id="recoveryInfo"></div>
       <div style="margin-top:8px">
-        <button class="btn btn-primary btn-small" id="btnRecover" type="button">복구해서 전사 마치기</button>
-        <button class="btn btn-ghost btn-small" id="btnAbandon" type="button">버리기</button>
+        <button class="btn btn-primary btn-small" id="btnRecover" type="button">Recover and finish transcribing</button>
+        <button class="btn btn-ghost btn-small" id="btnAbandon" type="button">Discard</button>
       </div>
     </div>
     <div class="card">
-      <h2>새 회의 녹음</h2>
-      <label class="lbl" for="topicInput">주제 (선택)</label>
-      <input type="text" id="topicInput" placeholder="예: 주간팀미팅" maxlength="50" autocomplete="off">
-      <div class="kbd-note">매번 직접 시작해야 합니다 (브라우저 보안 정책상 자동 녹음 불가).<br>
-      ① "녹음 시작" → ② 공유 범위에서 <b>"화면 전체"</b> 선택 → ③ <b>"시스템 오디오 공유" 체크</b> → ④ 공유 → ⑤ 마이크 허용.<br>
-      이 공유는 이 브라우저에서 소리를 듣기 위한 것으로, 회의 상대방에게는 공유되거나 알림이 가지 않습니다. Teams를 전체화면으로 띄울 필요는 없습니다 (최소화해도 됩니다).</div>
-      <button class="btn btn-primary" id="btnStart" type="button">녹음 시작</button>
-      <div class="muted" id="micOnlyNote" style="display:none;margin-top:8px">이 기기는 화면 공유를 지원하지 않아 마이크로만 녹음됩니다. 회의 소리는 스피커를 통해 마이크에 담기니 볼륨을 키워 두세요.</div>
+      <h2>New meeting recording</h2>
+      <label class="lbl" for="topicInput">Topic (optional)</label>
+      <input type="text" id="topicInput" placeholder="e.g., Weekly team meeting" maxlength="50" autocomplete="off">
+      <div class="kbd-note">You must start manually each time (browser security policy disallows auto-recording).<br>
+      ① "Start recording" → ② in the share picker <b>"Entire screen"</b> → ③ check <b>"Share system audio"</b> → ④ Share → ⑤ allow the mic.<br>
+      This sharing only lets this browser hear the audio — other participants are not notified. No need for fullscreen Teams (minimized is fine).</div>
+      <button class="btn btn-primary" id="btnStart" type="button">Start recording</button>
+      <div class="muted" id="micOnlyNote" style="display:none;margin-top:8px">This device doesn't support screen sharing, so recording is mic-only. Meeting audio reaches the mic through the speaker — turn the volume up.</div>
       <div class="banner err" id="permErr"></div>
     </div>
     <details class="card" id="modelDetails">
-      <summary class="collapse-head"><h2>전사 모델 상태</h2><span class="chev">▸</span></summary>
-      <div class="muted" id="modelStatus">확인 중…</div>
+      <summary class="collapse-head"><h2>Transcription model status</h2><span class="chev">▸</span></summary>
+      <div class="muted" id="modelStatus">Checking…</div>
       <div class="progress" id="modelProgWrap" style="display:none"><div id="modelProg"></div></div>
-      <button class="btn btn-primary" id="btnPreload" type="button">고품질 모델 미리 받기 (661MB, 고사양 PC용)</button>
-      <div class="muted" style="margin-top:6px">모델을 받아두면 회의 중 전사가 더 정확하고 빨라집니다.
-      받지 않아도 녹음은 바로 시작되고, 가벼운 모델로 전사됩니다.</div>
+      <button class="btn btn-primary" id="btnPreload" type="button">Pre-download high-quality model (661MB, for high-spec PCs)</button>
+      <div class="muted" style="margin-top:6px">Pre-downloading makes transcription more accurate and faster.
+      You can start recording right away without it — a lighter model will be used.</div>
     </details>
     <div class="card">
-      <h2>알아두기</h2>
-      <div class="muted">- 오디오는 이 기기를 떠나지 않습니다. 전사도 여기서 합니다.<br>
-      - 전사본은 브라우저에 저장됩니다. 회사 정책으로 삭제될 수 있으니 중요한 회의는 파일로 다운로드하세요.<br>
-      - 녹음 중에는 이 탭을 닫지 마세요.</div>
+      <h2>Good to know</h2>
+      <div class="muted">- Audio never leaves this device. Transcription happens here too.<br>
+      - Transcripts are stored in the browser. Company policy may wipe them, so download important meetings as files.<br>
+      - Don't close this tab while recording.</div>
     </div>
   </section>
 
-  <!-- 녹음 중 화면 -->
+  <!-- recording screen -->
   <section class="screen" id="scr-rec">
-    <div class="rec-indicator"><span class="rec-dot" id="recDot"></span><span id="recLabel">녹음 중</span><span class="spacer" style="flex:1"></span><span id="recClock">00:00</span></div>
-    <div class="banner warn" id="sysAudioWarn">상대방 소리가 안 들어옵니다. 화면 공유 선택 시 <b>오디오 공유</b>를 켜셨는지 확인하세요.</div>
-    <div class="banner err" id="trackLostWarn">오디오 입력이 끊겼습니다. 녹음을 다시 시작해 주세요.</div>
+    <div class="rec-indicator"><span class="rec-dot" id="recDot"></span><span id="recLabel">Recording</span><span class="spacer" style="flex:1"></span><span id="recClock">00:00</span></div>
+    <div class="banner warn" id="sysAudioWarn">Can't hear others. When sharing your screen, make sure <b>audio sharing</b> is on.</div>
+    <div class="banner err" id="trackLostWarn">Audio input was lost. Please restart recording.</div>
     <div class="card">
       <div class="timer" id="elapsed">00:00:00</div>
-      <div class="meter-row" id="sysMeterRow"><span class="lab">상대방 소리</span><div class="meter sys"><div id="mSys"></div></div></div>
-      <div class="meter-row"><span class="lab">내 목소리</span><div class="meter"><div id="mMic"></div></div></div>
-      <div class="muted" id="txProg" style="margin-top:8px">전사 대기 중…</div>
+      <div class="meter-row" id="sysMeterRow"><span class="lab">Others’ audio</span><div class="meter sys"><div id="mSys"></div></div></div>
+      <div class="meter-row"><span class="lab">My voice</span><div class="meter"><div id="mMic"></div></div></div>
+      <div class="muted" id="txProg" style="margin-top:8px">Waiting to transcribe…</div>
       <div class="progress" id="saveProgWrap" style="display:none;margin-top:8px"><div id="saveProg"></div></div>
     </div>
-    <button class="btn btn-danger" id="btnStop" type="button">중지하고 저장</button>
+    <button class="btn btn-danger" id="btnStop" type="button">Stop and save</button>
   </section>
 
-  <!-- 목록 화면 -->
+  <!-- list screen -->
   <section class="screen" id="scr-list">
     <div class="card">
-      <div class="muted" style="margin-bottom:8px">브라우저 데이터는 회사 정책으로 삭제될 수 있습니다. 중요한 회의는 파일로 다운로드하세요.</div>
+      <div class="muted" style="margin-bottom:8px">Browser data may be wiped by company policy. Download important meetings as files.</div>
       <div class="banner info" id="autoDlNote"></div>
-      <input type="search" id="searchInput" placeholder="전사본 검색 (키워드)" autocomplete="off">
+      <input type="search" id="searchInput" placeholder="Search transcripts (keyword)" autocomplete="off">
     </div>
-    <div class="card" id="meetList"><div class="muted">불러오는 중…</div></div>
+    <div class="card" id="meetList"><div class="muted">Loading…</div></div>
   </section>
 
-  <!-- 읽기 화면 -->
+  <!-- reader screen -->
   <section class="screen" id="scr-read">
     <div class="card">
       <h2 id="readTitle" style="font-size:17px"></h2>
       <div class="muted" id="readMeta"></div>
       <div style="margin-top:8px">
-        <button class="btn btn-ghost btn-small" id="btnDlTxt" type="button">txt 다운로드</button>
-        <button class="btn btn-ghost btn-small" id="btnDlSrt" type="button">srt 다운로드</button>
-        <button class="btn btn-ghost btn-small" id="btnBack" type="button">목록으로</button>
+        <button class="btn btn-ghost btn-small" id="btnDlTxt" type="button">Download txt</button>
+        <button class="btn btn-ghost btn-small" id="btnDlSrt" type="button">Download srt</button>
+        <button class="btn btn-ghost btn-small" id="btnBack" type="button">Back to list</button>
       </div>
     </div>
     <div class="card" id="segList"></div>
   </section>
 
-  <!-- 설정 화면 -->
+  <!-- settings screen -->
   <section class="screen" id="scr-settings">
     <div class="card">
-      <h2>오디오 보관</h2>
-      <label class="lbl" for="audioPolicy">녹음본 보관 정책</label>
+      <h2>Audio retention</h2>
+      <label class="lbl" for="audioPolicy">Recording retention policy</label>
       <select id="audioPolicy">
-        <option value="immediate">전사 완료 후 즉시 폐기</option>
-        <option value="3days" selected>3일 후 자동 폐기</option>
-        <option value="7days">7일 후 자동 폐기</option>
-        <option value="keep">영구 보관</option>
+        <option value="immediate">Delete right after transcription</option>
+        <option value="3days" selected>Auto-delete after 3 days</option>
+        <option value="7days">Auto-delete after 7 days</option>
+        <option value="keep">Keep forever</option>
       </select>
-      <div class="muted" style="margin-top:6px">전사본은 항상 보관됩니다. 녹음본만 이 정책으로 정리됩니다.</div>
+      <div class="muted" style="margin-top:6px">Transcripts are always kept. Only recordings follow this policy.</div>
     </div>
     <div class="card">
-      <h2>전사 엔진</h2>
-      <label class="lbl" for="whisperModel">전사 모델</label>
+      <h2>Transcription engine</h2>
+      <label class="lbl" for="whisperModel">Transcription model</label>
       <select id="whisperModel">
-        <option value="Xenova/whisper-small" selected>표준 (정확함, whisper-small)</option>
-        <option value="Xenova/whisper-base">빠름 (2~3배 빠름, 정확도 낮음)</option>
+        <option value="Xenova/whisper-small" selected>Standard (accurate, whisper-small)</option>
+        <option value="Xenova/whisper-base">Fast (2–3× faster, less accurate)</option>
       </select>
-      <div class="muted" style="margin-top:6px">둘 다 한국어·영어 자동 감지. 빠름 모드는 긴 녹음 전사 시간을 줄이고 싶을 때 사용하세요.</div>
+      <div class="muted" style="margin-top:6px">Both auto-detect Korean and English. Use Fast mode to shorten transcription time for long recordings.</div>
       <div class="muted" id="engineInfo" style="margin-top:8px">-</div>
     </div>
     <div class="card">
-      <h2>진단</h2>
-      <button class="btn btn-ghost btn-small" id="btnWipe" type="button">모든 데이터 삭제</button>
-      <div class="muted" style="margin-top:6px">전사본·녹음본·설정을 이 브라우저에서 모두 지웁니다. 되돌릴 수 없습니다.</div>
+      <h2>Diagnostics</h2>
+      <button class="btn btn-ghost btn-small" id="btnWipe" type="button">Delete all data</button>
+      <div class="muted" style="margin-top:6px">Deletes all transcripts, recordings, and settings from this browser. This cannot be undone.</div>
     </div>
   </section>
 </main>
-<footer class="foot">미팅 전사 · 개인용 · 오디오는 이 기기를 떠나지 않습니다</footer>
+<footer class="foot">© 2026 Young Ma with Muse · Private use · Audio never leaves this device</footer>
 <script type="importmap">
 { "imports": {
   "parakeet.js": "https://cdn.jsdelivr.net/npm/parakeet.js@1.4.4/src/index.js",
@@ -240,11 +240,11 @@ if ('serviceWorker' in navigator) {
 </script>
 <script type="module">
 'use strict';
-/* ============ 유틸 (TDD 검증 로직과 동일 동작) ============ */
+/* ============ utils (same behavior as TDD-verified logic) ============ */
 const pad2 = n => String(n).padStart(2, '0');
 const $ = id => document.getElementById(id);
 function formatTitle(date, topic) {
-  const t = sanitizeTopic(topic) || '회의';
+  const t = sanitizeTopic(topic) || 'Meeting';
   const yy = String(date.getFullYear()).slice(2);
   return `${yy}-${pad2(date.getMonth()+1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())} ${t}`;
 }
@@ -271,16 +271,16 @@ function filterHallucinations(segs){
   let prevNorm = null, repeat = 0;
   for (const g of segs) {
     const n = normalizeText(g.text);
-    if (!n || b.has(n)) continue;                 // 기지 문구 / 빈 세그먼트 제거
-    if (n === prevNorm) { repeat++; if (repeat >= 2) continue; } // 3회 이상 반복 붕괴
+    if (!n || b.has(n)) continue;                 // drop boilerplate phrases / empty segments
+    if (n === prevNorm) { repeat++; if (repeat >= 2) continue; } // collapse repeats of 3+
     else { prevNorm = n; repeat = 0; }
     out.push(g);
   }
   return out;
 }
-/** "two types of two types of…" 같은 연속 반복 구를 1회로 붕괴.
- *  짧은 단위(1~2단어)는 3회 이상, 긴 단위는 2회 이상 연속될 때만 붕괴
- *  ("very very good" 같은 정상 강조는 유지) */
+/** Collapse a repeated phrase like "two types of two types of…" into one.
+ *  Short units (1-2 words) collapse at 3+ in a row; long units at 2+.
+ *  (keeps normal emphasis like "very very good") */
 function collapseRepeats(text){
   const w = String(text||'').split(/\s+/).filter(Boolean);
   if (w.length < 4) return w.join(' ');
@@ -310,7 +310,7 @@ function avgRms(ws,s,e){ let sm=0,n=0;
 }
 function attributeSpeakers(segs, micE, sysE, th=0.005){
   return segs.map(g=>{ const m=avgRms(micE,g.start,g.end), s=avgRms(sysE,g.start,g.end);
-    let sp='상대방'; if (m>s && m>th) sp='나'; else if (m<=th && s<=th) sp='알 수 없음';
+    let sp='Other'; if (m>s && m>th) sp='Me'; else if (m<=th && s<=th) sp='Unknown';
     return {...g, speaker:sp}; });
 }
 function download(name, text, mime){
@@ -375,15 +375,15 @@ async function clearStore(store){
   });
 }
 
-/* ============ 오디오 캡처 파이프라인 ============ */
-const CHUNK_SEC = 300; // 5분 청크
+/* ============ audio capture pipeline ============ */
+const CHUNK_SEC = 300; // 5-minute chunks
 const AudioCap = {
   ctx:null, displayStream:null, micStream:null, mixedDest:null,
   recorder:null, analysers:{}, energy:{mic:[],sys:[]}, recStart:0,
   chunkIndex:0, onChunk:null, onLevel:null, onTrackLost:null, meterTimer:0, elapsedTimer:0,
 
   async start(){
-    // 1) 시스템 오디오 (상대방) — iPad Safari 등 getDisplayMedia 미지원 기기에서는 생략(마이크 전용)
+    // 1) system audio (others) — skipped on devices without getDisplayMedia (e.g. iPad Safari): mic-only
     const hasGDM = !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia);
     if (hasGDM){
       this.displayStream = await navigator.mediaDevices.getDisplayMedia({ video:true, audio:true });
@@ -391,7 +391,7 @@ const AudioCap = {
       this.displayStream = null;
     }
     const sysTrack = (this.displayStream && this.displayStream.getAudioTracks()[0]) || null;
-    // 2) 마이크 (본인)
+    // 2) mic (self)
     this.micStream = await navigator.mediaDevices.getUserMedia({ audio:true });
     const micTrack = this.micStream.getAudioTracks()[0];
     if (!micTrack) throw new Error('mic-missing');
@@ -407,19 +407,19 @@ const AudioCap = {
     const sysSrc = sysTrack ? mkSrc(this.displayStream, sysTrack) : null;
     const micSrc = mkSrc(this.micStream, micTrack);
 
-    // 레벨 미터용 analyser (gain 전)
+    // analyser for level meters (pre-gain)
     const mkAn = src=>{ const an=this.ctx.createAnalyser(); an.fftSize=512; src.connect(an); return an; };
     if (sysSrc) this.analysers.sys = mkAn(sysSrc);
     this.analysers.mic = mkAn(micSrc);
 
-    // 믹싱 → MediaStreamDestination
+    // mix → MediaStreamDestination
     this.mixedDest = this.ctx.createMediaStreamDestination();
     const master = this.ctx.createGain(); master.gain.value = 1;
     if (sysSrc){ const g=this.ctx.createGain(); sysSrc.connect(g); g.connect(master); }
     { const g=this.ctx.createGain(); micSrc.connect(g); g.connect(master); }
     master.connect(this.mixedDest);
 
-    // 트랙 끊김 감지
+    // track-loss detection
     const lost = ()=>{ this.onTrackLost && this.onTrackLost(); };
     if (this.displayStream) this.displayStream.getTracks().forEach(t=>{ t.onended=lost; t.onmute=lost; });
     this.micStream.getTracks().forEach(t=>{ t.onended=lost; });
@@ -431,7 +431,7 @@ const AudioCap = {
     return { hasSystemAudio: !!sysTrack, micOnly: !hasGDM };
   },
 
-  /** 부분 실패 시(화면공유 성공 후 마이크 거부 등) 열린 트랙 정리 */
+  /** Clean up open tracks on partial failure (e.g. screen share OK, mic denied) */
   abort(){
     clearInterval(this.meterTimer);
     try{ if (this.recorder && this.recorder.state!=='inactive') this.recorder.stop(); }catch(_){}
@@ -461,7 +461,7 @@ const AudioCap = {
       const t = (Date.now()-this.recStart)/1000;
       const mR = this.analysers.mic ? rmsOf(this.analysers.mic) : 0;
       const sR = this.analysers.sys ? rmsOf(this.analysers.sys) : 0;
-      // 1초 단위 에너지 기록 (화자 판정용)
+      // per-second energy log (for speaker attribution)
       this.energy.mic.push({start:sec, end:sec+1, rms:mR});
       this.energy.sys.push({start:sec, end:sec+1, rms:sR});
       sec++;
@@ -483,17 +483,17 @@ const AudioCap = {
     tracks.forEach(t=>{ try{t.stop();}catch(_){} });
     if (this.ctx) { try{ await this.ctx.close(); }catch(_){} this.ctx=null; }
     this.analysers = {};
-    return last; // 마지막 청크 blob (없을 수 있음)
+    return last; // last chunk blob (may not exist)
   }
 };
 
-/* ============ 전사 엔진 ============ */
+/* ============ transcription engines ============ */
 const Engines = {
   parakeet:null, whisper:null, parakeetReady:false, whisperReady:false,
-  parakeetCached:false, whisperCached:false, // 파일 캐시됨(설치됨). 세션은 전사 시점에 생성
+  parakeetCached:false, whisperCached:false, // files cached (installed). Session is created at transcription time
   onProgress:null, // (engine, file, loaded, total) => void
 
-  /** 미리 받기: 파일 다운로드+IndexedDB 캐시만. ORT 세션은 만들지 않음 (메모리 절약, crash 방지) */
+  /** Pre-download: download files + IndexedDB cache only. No ORT session (saves memory, avoids crash) */
   async preloadParakeet(){
     if (this.parakeetCached) return true;
     const { getParakeetModel } = await import('parakeet.js');
@@ -502,20 +502,20 @@ const Engines = {
       perFile[p.file] = p;
       let l=0,t=0;
       for (const k in perFile){ l+=perFile[k].loaded||0; t+=perFile[k].total||0; }
-      this.onProgress && this.onProgress('parakeet', '전체', l, t);
+      this.onProgress && this.onProgress('parakeet', 'total', l, t);
     };
     const result = await getParakeetModel('parakeet-tdt-0.6b-v2', {
       backend:'wasm', cpuThreads:4, encoderQuant:'int8', decoderQuant:'int8',
       preprocessor:'nemo128', progress:prog,
     });
-    // blob URL 해제 → 메모리 반환 (파일은 IndexedDB에 보관됨)
+    // release blob URL → free memory (files stay in IndexedDB)
     if (result && result.urls) for (const k in result.urls){ try{ URL.revokeObjectURL(result.urls[k]); }catch(_){} }
     this.parakeetCached = true;
     try{ localStorage.setItem('mt_model_parakeet','1'); }catch(_){}
     return true;
   },
 
-  /** 시작 시 캐시 검사: 이전에 받아둔 모델이 있으면 '설치됨'으로 표시 */
+  /** Check cache at startup: show 'Installed' for previously downloaded models */
   async checkCache(){
     try{
       const db = await new Promise((res,rej)=>{
@@ -535,7 +535,7 @@ const Engines = {
     try{
       const c = await caches.open('meeting-transcriber-whisper');
       const keys = await c.keys();
-      // 선택된 다국어 모델 기준. 영어 전용(.en) 캐시는 제외
+      // based on the selected multilingual model. English-only (.en) cache excluded
       const mid = this.whisperModel || 'Xenova/whisper-small';
       this.whisperCached = keys.some(k=>k.url.includes('/'+mid+'/') && !k.url.includes('.en/'));
     }catch(_){ this.whisperCached = false; }
@@ -555,46 +555,46 @@ const Engines = {
     return this.parakeet;
   },
 
-  whisperModel:'Xenova/whisper-small', // 설정에서 변경 (whisper-base=빠름)
+  whisperModel:'Xenova/whisper-small', // changeable in settings (whisper-base=fast)
   _worker:null, _workerReady:null, _txSeq:0,
 
-  /** Whisper 워커 준비 (모델 로드 포함). 실패하면 null → 메인스레드 폴백 */
+  /** Prepare the whisper worker (incl. model load). Returns null on failure → main-thread fallback */
   ensureWhisperWorker(){
     if (this._workerReady) return this._workerReady;
     this._workerReady = (async ()=>{
       const model = this.whisperModel;
       let w;
       try { w = new Worker('whisper-worker.js', { type:'module' }); }
-      catch(e){ console.warn('워커 생성 실패, 메인스레드 폴백:', e); return null; }
+      catch(e){ console.warn('Worker creation failed, falling back to main thread:', e); return null; }
       this._worker = w;
       const ready = new Promise((res, rej)=>{
-        const to = setTimeout(()=>rej(new Error('워커 초기화 시간 초과')), 180000);
+        const to = setTimeout(()=>rej(new Error('worker init timeout')), 180000);
         const h = (e)=>{
           const m = e.data||{};
           if (m.type==='ready'){ clearTimeout(to); w.removeEventListener('message',h); w.removeEventListener('error',herr); res(w); }
           else if (m.type==='error' && !m.id){ clearTimeout(to); w.removeEventListener('message',h); w.removeEventListener('error',herr); rej(new Error(m.message)); }
           else if (m.type==='modelProgress'){ this.onProgress && this.onProgress('whisper', m.file, m.loaded, m.total); }
         };
-        // 워커 스크립트 자체가 로드 실패하면(방화벽 등) message가 절대 안 오므로 error 이벤트로 즉시 감지
-        const herr = ()=>{ clearTimeout(to); w.removeEventListener('message',h); w.removeEventListener('error',herr); rej(new Error('워커 스크립트 로드 실패')); };
+        // if the worker script itself fails to load (firewall etc.), no message ever arrives — detect via error event
+        const herr = ()=>{ clearTimeout(to); w.removeEventListener('message',h); w.removeEventListener('error',herr); rej(new Error('worker script load failed')); };
         w.addEventListener('message', h);
         w.addEventListener('error', herr);
       });
       w.postMessage({ type:'init', model });
       try { return await ready; }
-      catch(e){ console.warn('워커 초기화 실패, 메인스레드 폴백:', e);
+      catch(e){ console.warn('Worker init failed, falling back to main thread:', e);
         try{ w.terminate(); }catch(_){} this._worker=null; return null; }
     })();
     return this._workerReady;
   },
 
-  /** 모델 변경 시 워커 리셋 (다음 전사에서 새 모델로 로드) */
+  /** Reset the worker when the model changes (loads the new model on next transcription) */
   resetWhisperWorker(){
     try{ this._worker && this._worker.terminate(); }catch(_){}
     this._worker=null; this._workerReady=null; this.whisperReady=false; this.whisper=null;
   },
 
-  /** 30초 PCM 언어 감지 → 'ko'/'en'. 실패 시 'en' */
+  /** Language detection from 30s of PCM → 'ko'/'en'. Falls back to 'en' */
   async detectLanguage(pcm){
     const w = await this.ensureWhisperWorker();
     if (!w) return 'en';
@@ -607,13 +607,13 @@ const Engines = {
         if (m.type==='detected' && m.language) res(m.language); else res('en');
       };
       w.addEventListener('message', h);
-      // 항상 복사본을 전송 (원본 버퍼를 transfer하면 호출자 배열이 비워짐)
+      // always transfer a copy (transferring the original buffer empties the caller's array)
       const s = pcm.slice(0, Math.min(pcm.length, 480000));
       w.postMessage({ type:'detect', id, pcm:s }, [s.buffer]);
     });
   },
 
-  /** 30초 이하 PCM 윈도우 하나를 워커(또는 폴백)에서 전사 → 타임스탬프 청크 배열 */
+  /** Transcribe one PCM window (<=30s) in the worker (or fallback) → timestamped chunk array */
   async transcribeWindow(pcm, language){
     const w = await this.ensureWhisperWorker();
     if (w){
@@ -629,7 +629,7 @@ const Engines = {
         w.postMessage({ type:'transcribe', id, pcm, language }, [pcm.buffer]);
       });
     }
-    // 폴백: 메인스레드 (구형 브라우저)
+    // fallback: main thread (older browsers)
     const asr = await this.ensureWhisperMain();
     const out = await asr(pcm, { language, task:'transcribe', return_timestamps:true,
       chunk_length_s:30, stride_length_s:0, no_repeat_ngram_size:3, max_new_tokens:224 });
@@ -647,7 +647,7 @@ const Engines = {
     return this.whisper;
   },
 
-  /** 16kHz mono Float32Array 리샘플 */
+  /** Resample to 16kHz mono Float32Array */
   async resample16k(blob){
     const ab = await blob.arrayBuffer();
     const AC = window.AudioContext || window.webkitAudioContext;
@@ -663,18 +663,18 @@ const Engines = {
     } finally { try{ await tmp.close(); }catch(_){} }
   },
 
-  /** 무성 청크 스킵: 전체 RMS가 임계값 미만이면 전사 생략 */
+  /** Skip silent chunks: skip transcription when overall RMS is below threshold */
   isSilent(pcm, th=0.008){
     let s=0; const n=Math.min(pcm.length, 16000*30);
     for (let i=0;i<n;i+=7) s += pcm[i]*pcm[i];
     return Math.sqrt(s/(n/7)) < th;
   },
 
-  /** 한 청크 전사 → {segs:[{start,end,text}] (청크 내 상대 시간), engine}.
-   *  onWin(done,total): 30초 구간 단위 진행률 콜백 */
+  /** Transcribe one chunk → {segs:[{start,end,text}] (chunk-relative times), engine}.
+   *  onWin(done,total): per-30s-window progress callback */
   async transcribeChunk(pcm, onWin){
     if (this.isSilent(pcm)) return { segs:[], engine:'none' };
-    // parakeet(661MB)는 미리 받기에 성공한 고사양 PC에서만 시도. 메모리 부족 PC에서는 탭 crash 나므로 건너뜀
+    // parakeet (661MB) only on high-spec PCs that pre-downloaded it; skipped on low-memory PCs to avoid tab crashes
     if (this.parakeetCached){
       try {
         const m = await this.ensureParakeet();
@@ -682,25 +682,25 @@ const Engines = {
         const words = (r.words||[]).filter(w=>w.confidence==null || w.confidence>0.15);
         onWin && onWin(1,1);
         return { segs: groupWords(words.map(w=>({start:w.start_time, end:w.end_time, text:w.text}))), engine:'parakeet' };
-      } catch(e){ console.error('parakeet 실패, whisper 폴백:', e); }
+      } catch(e){ console.error('Parakeet failed, whisper fallback:', e); }
     }
-    // whisper: 30초 윈도우로 직접 분할 → 구간 단위 진행률 + 워커 추론(페이지 멈춤 방지)
-    // 반복 환각은 워커의 no_repeat_ngram_size + 여기서 collapseRepeats로 이중 차단
+    // whisper: split into 30s windows directly → per-window progress + worker inference (no page freeze)
+    // repeat hallucinations blocked twice: worker no_repeat_ngram_size + collapseRepeats here
     const SR=16000, WIN=30*SR, STEP=25*SR, OVERLAP=5;
     const starts=[];
     for (let s=0; s<pcm.length; s+=STEP) starts.push(s);
-    // 언어 감지 (청크당 1회, 첫 윈도우 기준). 지정 안 하면 transformers.js가 영어로 고정해서
-    // 한글 음성이 영어로 번역돼 버림 ("No language specified - defaulting to English")
+    // language detection (once per chunk, first window). Without it transformers.js pins to English,
+    // which turns Korean speech into English translations ("No language specified - defaulting to English")
     let lang='en';
     try {
       lang = await this.detectLanguage(pcm.slice(0, Math.min(WIN, pcm.length)));
-    } catch(e){ console.warn('언어 감지 실패, 영어 기본:', e); }
+    } catch(e){ console.warn('Language detection failed, defaulting to English:', e); }
     const segs=[];
     for (let i=0;i<starts.length;i++){
       const s=starts[i];
       const wpcm=pcm.slice(s, Math.min(s+WIN, pcm.length));
       const chunks=await this.transcribeWindow(wpcm, lang);
-      const trim=i===0?0:OVERLAP; // 이전 윈도우와 겹치는 5초는 버림 (중복 방지)
+      const trim=i===0?0:OVERLAP; // drop the 5s overlap with the previous window (dedupe)
       for (const c of chunks){
         const cs=c.timestamp[0], ce=c.timestamp[1];
         if (!(ce>trim)) continue;
@@ -713,10 +713,10 @@ const Engines = {
     return { segs: filterHallucinations(segs), engine:'whisper', language:lang };
   }
 };
-// E2E 테스트 훅 (읽기 전용 노출, 민감정보 없음)
+// E2E test hook (read-only exposure, no sensitive data)
 window.Engines = Engines;
 
-/** 단어들을 세그먼트로 묶기 (문장부호/12초/25단어 기준) */
+/** Group words into segments (by punctuation / 12s / 25 words) */
 function groupWords(words){
   const segs=[]; let cur=null;
   const push=()=>{ if(cur&&cur.text.trim()){cur.text=cur.text.trim();segs.push(cur);} cur=null; };
@@ -731,7 +731,7 @@ function groupWords(words){
   return filterHallucinations(segs);
 }
 
-/* ============ 녹음 세션 + 전사 큐 ============ */
+/* ============ recording session + transcription queue ============ */
 const App = {
   meeting:null, queue:[], processing:false, lastSound:0, silenceWarned:false,
   audioEl:null,
@@ -739,21 +739,21 @@ const App = {
   async startRecording(){
     hideBanner('permErr');
     const topic = $('topicInput').value;
-    // 1) 캡처 (권한 팝업)
+    // 1) capture (permission popup)
     let cap;
     try { cap = await AudioCap.start(); }
     catch(e){
-      AudioCap.abort(); // 화면공유만 성공한 경우 트랙 정리
+      AudioCap.abort(); // clean up tracks when only screen sharing succeeded
       const el = $('permErr');
       if (e && e.name==='NotAllowedError'){
-        el.textContent = '권한이 거부됐습니다. 화면 공유를 취소했거나 마이크가 차단됐습니다. 주소창 자물쇠 → 사이트 설정에서 허용 후 다시 시도하세요.';
+        el.textContent = 'Permission denied. You may have cancelled screen sharing or blocked the mic. Click the lock icon in the address bar → Site settings → Allow, then try again.';
       } else {
-        el.textContent = '캡처 시작 실패: ' + (e && e.message || e);
+        el.textContent = 'Failed to start capture: ' + (e && e.message || e);
       }
       el.classList.add('show');
       return;
     }
-    // 2) 세션 생성
+    // 2) create session
     const startedAt = new Date();
     this.meeting = {
       id: 'm'+Date.now().toString(36), topic: sanitizeTopic(topic),
@@ -765,22 +765,22 @@ const App = {
       segmentsByChunk:{}, status:'recording' });
     this.lastSound = Date.now(); this.silenceWarned = false;
 
-    // 3) 콜백 연결
+    // 3) wire callbacks
     AudioCap.onChunk = (blob, idx)=>this.onAudioChunk(blob, idx);
     AudioCap.onLevel = ({mic, sys})=>{
       $('mMic').style.width = Math.min(100, mic*400)+'%';
       $('mSys').style.width = Math.min(100, sys*400)+'%';
       if (mic>0.01 || sys>0.01) this.lastSound = Date.now();
-      // 시스템 오디오 무음 경고 (시작 15초 후부터, 마이크 전용 모드 제외)
+      // system-audio silence warning (from 15s after start; skipped in mic-only mode)
       const el = $('sysAudioWarn');
       const elapsed = (Date.now()-AudioCap.recStart)/1000;
       if (elapsed>15 && !cap.hasSystemAudio && !cap.micOnly) el.classList.add('show'); else el.classList.remove('show');
-      // 10분 무음 → 깜빡 잊음 알림
+      // 10 minutes of silence → forgotten-recording reminder
       if (!this.silenceWarned && Date.now()-this.lastSound > 10*60*1000){
         this.silenceWarned = true;
-        if (confirm('10분간 소리가 없습니다. 아직 녹음 중입니다. 중지할까요?')) this.stopRecording();
+        if (confirm('No sound for 10 minutes. Still recording. Stop?')) this.stopRecording();
       }
-      // 4시간 자동 중지
+      // auto-stop at 4 hours
       if (elapsed > 4*3600) this.stopRecording();
     };
     AudioCap.onTrackLost = ()=>{
@@ -790,11 +790,11 @@ const App = {
 
     showScreen('scr-rec');
     const smr = $('sysMeterRow'); if (smr) smr.style.display = (cap && cap.micOnly) ? 'none' : '';
-    const rl0 = $('recLabel'); if (rl0) rl0.textContent = '녹음 중';
+    const rl0 = $('recLabel'); if (rl0) rl0.textContent = 'Recording';
     const rd0 = $('recDot'); if (rd0){ rd0.style.animation=''; rd0.style.background=''; }
     const spw0 = $('saveProgWrap'); if (spw0) spw0.style.display='none';
     $('topicInput').value = '';
-    window.onbeforeunload = ()=> '녹음 중입니다. 페이지를 닫으면 녹음이 중단됩니다.';
+    window.onbeforeunload = ()=> 'Recording in progress. Closing this page will stop the recording.';
     this.tickClock();
   },
 
@@ -829,15 +829,15 @@ const App = {
 
   updateTxProg(){
     if (!this.meeting) return;
-    const w = this.txWin; // {d, t} 현재 청크의 30초 구간 진행률
-    const winTxt = (w && w.t>1) ? ` · 구간 ${w.d}/${w.t}` : '';
+    const w = this.txWin; // {d, t} per-30s-window progress of the current chunk
+    const winTxt = (w && w.t>1) ? ` · part ${w.d}/${w.t}` : '';
     const txt = this.meeting.chunksDone >= this.meeting.chunksTotal && this.meeting.chunksTotal>0
-      ? `전사 완료 (${this.meeting.chunksTotal} 청크)`
-      : `전사 중… ${this.meeting.chunksDone}/${this.meeting.chunksTotal} 청크${winTxt}`;
+      ? `Transcription done (${this.meeting.chunksTotal} chunks)`
+      : `Transcribing… ${this.meeting.chunksDone}/${this.meeting.chunksTotal} chunks${winTxt}`;
     const tp = $('txProg'); if (tp) tp.textContent = txt;
     const ri = $('recoveryInfo');
     if (ri && $('recoveryCard') && $('recoveryCard').style.display!=='none') ri.textContent = txt;
-    // 저장 중 프로그레스 바 (구간 단위까지 반영)
+    // progress bar while saving (reflects per-window progress)
     const spw = $('saveProgWrap'), sp = $('saveProg');
     if (sp && spw && spw.style.display!=='none' && this.meeting.chunksTotal>0){
       const frac = (w && w.t>0) ? w.d/w.t : 0;
@@ -870,7 +870,7 @@ const App = {
         this.txWin = { d, t }; this.updateTxProg();
       });
       this.txWin = null;
-      // 절대 시간으로 변환 + 화자 판정 (세션 에너지 사용)
+      // convert to absolute times + speaker attribution (using session energy)
       const cp = await get('checkpoints', meetingId);
       const abs = segs.map(s=>({ start:s.start+offset, end:s.end+offset, text:s.text }));
       const labeled = attributeSpeakers(abs, App.energyOf(meetingId).mic, App.energyOf(meetingId).sys);
@@ -880,7 +880,7 @@ const App = {
       engByChunk[chunkIndex] = engine;
       await put('checkpoints', { ...(cp||{}), meetingId, segmentsByChunk:byChunk, enginesByChunk:engByChunk });
     } catch(e){
-      console.error('청크 전사 실패', chunkIndex, e);
+      console.error('Chunk transcription failed', chunkIndex, e);
       try {
         const cp2 = await get('checkpoints', meetingId);
         if (cp2){
@@ -893,7 +893,7 @@ const App = {
   },
 
   energyOf(meetingId){
-    // 현재 세션의 에너지 (복구 시에는 빈 배열 → 전부 '상대방' 판정, 허용)
+    // current session's energy (empty after recovery → all attributed to 'Other', acceptable)
     if (this.meeting && this.meeting.id===meetingId) return AudioCap.energy;
     return { mic:[], sys:[] };
   },
@@ -902,21 +902,21 @@ const App = {
     if (!this.meeting) return;
     const m = this.meeting;
     clearInterval(AudioCap.elapsedTimer);
-    $('btnStop').disabled = true; $('btnStop').textContent = '저장 중…';
-    const rl = $('recLabel'); if (rl) rl.textContent = '녹음 마침';
+    $('btnStop').disabled = true; $('btnStop').textContent = 'Saving…';
+    const rl = $('recLabel'); if (rl) rl.textContent = 'Recording stopped';
     const rd = $('recDot'); if (rd){ rd.style.animation='none'; rd.style.background='#4caf50'; }
     const spw = $('saveProgWrap'); if (spw){ spw.style.display='block'; $('saveProg').style.width='0%'; }
     try {
       const lastBlob = await AudioCap.stop();
-      if (lastBlob){ // 마지막 조각 (5분 미만)
+      if (lastBlob){ // last fragment (under 5 minutes)
         const idx = AudioCap.chunkIndex;
         await this.onAudioChunk(lastBlob, idx);
       }
-      // 남은 큐가 빌 때까지 대기
+      // wait until the queue drains
       while (this.queue.length || this.processing) await new Promise(r=>setTimeout(r,500));
       await this.finalize(m.id);
     } finally {
-      $('btnStop').disabled = false; $('btnStop').textContent = '중지하고 저장';
+      $('btnStop').disabled = false; $('btnStop').textContent = 'Stop and save';
       const spw2 = $('saveProgWrap'); if (spw2) spw2.style.display='none';
       this.meeting = null;
       window.onbeforeunload = null;
@@ -926,7 +926,7 @@ const App = {
         if (adl){
           sessionStorage.removeItem('mt-autodl');
           const n = $('autoDlNote');
-          n.textContent = `전사 완료. "${adl}.txt" 파일이 자동 다운로드되었습니다. 받지 못했다면 전사본을 열어 txt 다운로드를 눌러주세요.`;
+          n.textContent = `Transcription done. "${adl}.txt" was downloaded automatically. If you didn’t get it, open the transcript and press the txt download button.`;
           n.classList.add('show');
           setTimeout(()=>n.classList.remove('show'), 15000);
         }
@@ -937,7 +937,7 @@ const App = {
   async finalize(meetingId){
     const cp = await get('checkpoints', meetingId);
     if (!cp) return;
-    // 청크 순서대로 이어붙이되, 경계에서 끊긴 문장은 합치기
+    // join chunks in order, merging sentences cut at chunk boundaries
     const chunkEntries = Object.entries(cp.segmentsByChunk||{})
       .sort((a,b)=>Number(a[0])-Number(b[0]));
     const allSegs = [];
@@ -960,35 +960,35 @@ const App = {
       prevIdx = idx;
     }
     allSegs.sort((a,b)=>a.start-b.start);
-    // 사용된 전사 엔진 요약 (parakeet / whisper / 혼합)
+    // summary of engines used (parakeet / whisper / mixed)
     const engVals = Object.values(cp.enginesByChunk||{}).filter(e=>e && e!=='none');
     const errs = Object.values(cp.transcribeErrors||{});
     const engKeys = Object.keys(cp.enginesByChunk||{});
-    const engines = [...new Set(engVals)].join('+') || (errs.length ? '전사 실패' : (engKeys.length>0 ? '무음' : '알 수 없음'));
-    const note = errs.length ? String(errs[0]).slice(0,120) : (engines==='무음' ? '오디오가 무음으로 판단되어 전사를 건너뜀' : '');
+    const engines = [...new Set(engVals)].join('+') || (errs.length ? 'Transcription failed' : (engKeys.length>0 ? 'Silent' : 'Unknown'));
+    const note = errs.length ? String(errs[0]).slice(0,120) : (engines==='Silent' ? 'Audio judged silent — transcription skipped' : '');
     await put('transcripts', {
       id: meetingId, title: cp.title, topic: cp.topic, startedAt: cp.startedAt,
       segments: allSegs, createdAt: Date.now(),
       segCount: allSegs.length, engines, note,
     });
     await put('checkpoints', { ...cp, status:'done' });
-    // 정책이 즉시폐기면 오디오 바로 정리
+    // if policy is delete-immediately, clean up audio right away
     const settings = await get('settings','audioPolicy');
     if (settings && settings.v==='immediate'){
       const auds = await all('audio');
       for (const a of auds.filter(x=>x.meetingId===meetingId)) await del('audio',[a.meetingId,a.chunkIndex]);
     }
-    // 전사 완료 → txt 자동 다운로드 (브라우저가 차단하면 목록의 다운로드 버튼 사용)
+    // transcription done → auto-download txt (if the browser blocks it, use the list's download button)
     try {
       const t = await get('transcripts', meetingId);
       if (t && t.segments && t.segments.length){
         download(t.title+'.txt', txtOf(t), 'text/plain;charset=utf-8');
         try { sessionStorage.setItem('mt-autodl', t.title); } catch(_){}
       }
-    } catch(e){ console.warn('자동 다운로드 실패', e); }
+    } catch(e){ console.warn('Auto-download failed', e); }
   },
 
-  /** 크래시 복구: 중단된 세션을 시작 화면 카드로 표시 (네이티브 confirm 대신) */
+  /** Crash recovery: show the interrupted session as a start-screen card (instead of native confirm) */
   async checkRecovery(){
     const card = $('recoveryCard');
     const cps = (await all('checkpoints')).filter(c=>c.status==='recording');
@@ -999,10 +999,10 @@ const App = {
       .sort((a,b)=>a.chunkIndex-b.chunkIndex);
     if (card){
       card.style.display='block';
-      $('recoveryInfo').textContent = `${cp.title} — 전사 ${n}청크, 오디오 ${auds.length}청크`;
+      $('recoveryInfo').textContent = `${cp.title} — ${n} transcribed chunk${n===1?'':'s'}, ${auds.length} audio chunk${auds.length===1?'':'s'}`;
       $('btnRecover').onclick = ()=>this.doRecover(cp.meetingId);
       $('btnAbandon').onclick = async ()=>{
-        if (!confirm('중단된 녹음을 버릴까요? 저장된 오디오도 함께 삭제됩니다.')) return;
+        if (!confirm('Discard the interrupted recording? Saved audio will be deleted too.')) return;
         await put('checkpoints', { ...cp, status:'abandoned' });
         for (const a of auds) await del('audio',[a.meetingId,a.chunkIndex]);
         card.style.display='none';
@@ -1010,30 +1010,30 @@ const App = {
     }
   },
 
-  /** 복구 실행: 미전사 청크를 큐에 재등록 후 전사 */
+  /** Run recovery: re-queue untranscribed chunks, then transcribe */
   async doRecover(meetingId){
     const cp = await get('checkpoints', meetingId);
     if (!cp) return;
     const card = $('recoveryCard');
     const auds = (await all('audio')).filter(a=>a.meetingId===meetingId)
       .sort((a,b)=>a.chunkIndex-b.chunkIndex);
-    if (!auds.length && !Object.keys(cp.segmentsByChunk||{}).length){ alert('복구할 오디오가 없습니다.'); return; }
+    if (!auds.length && !Object.keys(cp.segmentsByChunk||{}).length){ alert('No audio to recover.'); return; }
     const doneIdx = new Set(Object.keys(cp.segmentsByChunk||{}).map(Number));
     for (const a of auds) if (!doneIdx.has(a.chunkIndex)) this.queue.push({meetingId, chunkIndex:a.chunkIndex});
     this.meeting = { id:meetingId, chunksDone:doneIdx.size, chunksTotal:auds.length, recovering:true };
     if (card){
       $('btnRecover').disabled = true; $('btnAbandon').disabled = true;
-      $('recoveryInfo').textContent = `${cp.title} — 전사 중…`;
+      $('recoveryInfo').textContent = `${cp.title} — transcribing…`;
     }
     await this.pumpQueue();
     await this.finalize(meetingId);
     this.meeting = null;
     if (card){ card.style.display='none'; $('btnRecover').disabled = false; $('btnAbandon').disabled = false; }
-    alert('복구 완료. 목록에서 확인하세요.');
+    alert('Recovery done. Check the list.');
     showScreen('scr-list'); renderList();
   },
 
-  /** 보관 정책 스윕 */
+  /** Retention policy sweep */
   async sweepRetention(){
     const settings = await get('settings','audioPolicy');
     const policy = settings ? settings.v : '3days';
@@ -1048,7 +1048,7 @@ const App = {
     (async ()=>{
       const idx = Math.floor(absSec / CHUNK_SEC);
       const rec = await get('audio', [meetingId, idx]);
-      if (!rec){ alert('오디오가 삭제되었습니다 (보관 정책).'); return; }
+      if (!rec){ alert('The audio was deleted (retention policy).'); return; }
       if (this.audioEl) { this.audioEl.pause(); }
       const url = URL.createObjectURL(rec.blob);
       this.audioEl = new Audio(url);
@@ -1081,7 +1081,7 @@ async function renderList(){
     (t.title||'').toLowerCase().includes(q) ||
     (t.segments||[]).some(s=>(s.text||'').toLowerCase().includes(q)));
   const box = $('meetList');
-  if (!items.length){ box.innerHTML = '<div class="muted">아직 전사본이 없습니다.</div>'; return; }
+  if (!items.length){ box.innerHTML = '<div class="muted">No transcripts yet.</div>'; return; }
   box.innerHTML = '';
   for (const t of items){
     const row = document.createElement('div'); row.className='meet-item';
@@ -1089,15 +1089,15 @@ async function renderList(){
     const ttl = document.createElement('div'); ttl.className='title'; ttl.textContent=t.title;
     const sub = document.createElement('div'); sub.className='sub';
     const dur = t.segments&&t.segments.length ? t.segments[t.segments.length-1].end : 0;
-    sub.textContent = `${t.segCount||0}개 구간 · 약 ${fmtDur(dur)}` + (t.note ? ` · ${t.note}` : '');
+    sub.textContent = `${t.segCount||0} segments · about ${fmtDur(dur)}` + (t.note ? ` · ${t.note}` : '');
     info.append(ttl, sub);
     const open = document.createElement('button'); open.className='btn btn-ghost btn-small';
-    open.type='button'; open.textContent='읽기';
+    open.type='button'; open.textContent='Read';
     open.onclick = ()=>openReader(t.id);
     const delBtn = document.createElement('button'); delBtn.className='btn btn-ghost btn-small';
-    delBtn.type='button'; delBtn.textContent='삭제';
+    delBtn.type='button'; delBtn.textContent='Delete';
     delBtn.onclick = async ()=>{
-      if (!confirm(`"${t.title}" 전사본을 삭제할까요? (녹음본도 함께 삭제됩니다)`)) return;
+      if (!confirm(`"${t.title}" Delete this transcript? (The recording will be deleted too.)`)) return;
       await del('transcripts', t.id);
       for (const a of (await all('audio')).filter(x=>x.meetingId===t.id))
         await del('audio',[a.meetingId,a.chunkIndex]);
@@ -1115,7 +1115,7 @@ async function openReader(id){
   currentReadId = id;
   $('readTitle').textContent = t.title;
   const dur = t.segments.length ? t.segments[t.segments.length-1].end : 0;
-  $('readMeta').textContent = `${fmtClock(t.startedAt)} · ${t.segments.length}개 구간 · 약 ${fmtDur(dur)}` + (t.engines ? ` · 전사: ${t.engines}` : '') + (t.note ? ` · ${t.note}` : '');
+  $('readMeta').textContent = `${fmtClock(t.startedAt)} · ${t.segments.length} segments · about ${fmtDur(dur)}` + (t.engines ? ` · Engine: ${t.engines}` : '') + (t.note ? ` · ${t.note}` : '');
   const box = $('segList'); box.innerHTML='';
   const auds = await all('audio');
   const hasAudio = auds.some(a=>a.meetingId===id);
@@ -1123,22 +1123,22 @@ async function openReader(id){
     const s = t.segments[i];
     const div = document.createElement('div'); div.className='seg';
     const spk = document.createElement('span');
-    spk.className = 'spk ' + (s.speaker==='나'?'me':s.speaker==='상대방'?'them':'unk');
+    spk.className = 'spk ' + (s.speaker==='Me'?'me':s.speaker==='Other'?'them':'unk');
     spk.textContent = s.speaker;
     const ts = document.createElement('button'); ts.className='ts'; ts.type='button';
     ts.textContent = srtTimestamp(s.start).slice(0,8);
     ts.disabled = !hasAudio;
-    ts.title = hasAudio ? '해당 구간 듣기' : '오디오 삭제됨';
+    ts.title = hasAudio ? 'Listen to this segment' : 'Audio deleted';
     if (hasAudio) ts.onclick = ()=>App.playSegmentAt(id, s.start);
     const tx = document.createElement('span'); tx.textContent = ' ' + s.text;
     const eb = document.createElement('button'); eb.className='editbtn'; eb.type='button';
-    eb.textContent = '✎'; eb.title = '텍스트 수정';
+    eb.textContent = '✎'; eb.title = 'Edit text';
     eb.onclick = ()=>{
       const ta = document.createElement('textarea');
       ta.value = s.text; ta.className='editarea'; ta.rows=3;
       const row = document.createElement('div'); row.className='editrow';
-      const sv = document.createElement('button'); sv.type='button'; sv.className='btn btn-ghost btn-small'; sv.textContent='저장';
-      const ca = document.createElement('button'); ca.type='button'; ca.className='btn btn-ghost btn-small'; ca.textContent='취소';
+      const sv = document.createElement('button'); sv.type='button'; sv.className='btn btn-ghost btn-small'; sv.textContent='Save';
+      const ca = document.createElement('button'); ca.type='button'; ca.className='btn btn-ghost btn-small'; ca.textContent='Cancel';
       row.append(sv, ca);
       tx.style.display='none'; eb.style.display='none';
       div.append(ta, row);
@@ -1169,18 +1169,18 @@ function txtOf(t){
 async function refreshModelStatus(){
   const el = $('modelStatus');
   const parts = [];
-  parts.push('고품질(parakeet): ' + (Engines.parakeetReady||Engines.parakeetCached ? '설치됨 ✓' : '미다운로드'));
+  parts.push('High quality (parakeet): ' + (Engines.parakeetReady||Engines.parakeetCached ? 'Installed ✓' : 'Not downloaded'));
   const wname = (Engines.whisperModel||'').split('/').pop() || 'whisper-small';
-  parts.push(`기본(${wname}): ` + (Engines.whisperReady||Engines.whisperCached ? '설치됨 ✓' : '미다운로드'));
+  parts.push(`Default (${wname}): ` + (Engines.whisperReady||Engines.whisperCached ? 'Installed ✓' : 'Not downloaded'));
   el.innerHTML = parts.map(esc).join('<br>');
   $('engineInfo').innerHTML = parts.map(esc).join('<br>') +
-    '<br>WebGPU 없음 → WASM으로 동작합니다.';
+    '<br>No WebGPU → running on WASM.';
   const bp = $('btnPreload');
-  if (bp && (Engines.parakeetReady||Engines.parakeetCached)){ bp.textContent = '고품질 모델 설치됨 ✓'; bp.disabled = true; }
+  if (bp && (Engines.parakeetReady||Engines.parakeetCached)){ bp.textContent = 'High-quality model installed ✓'; bp.disabled = true; }
 }
 
 async function init(){
-  // 화면 전환
+  // screen switching
   $('brandHome').onclick = ()=>showScreen('scr-start');
   if (!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia)){
     const mn = $('micOnlyNote'); if (mn) mn.style.display='block';
@@ -1188,12 +1188,12 @@ async function init(){
   $('navList').onclick = ()=>{ showScreen('scr-list'); renderList(); };
   $('navSettings').onclick = ()=>showScreen('scr-settings');
   $('btnBack').onclick = ()=>{ showScreen('scr-list'); renderList(); };
-  // 시작/중지
+  // start/stop
   $('btnStart').onclick = ()=>App.startRecording();
   $('btnStop').onclick = ()=>App.stopRecording();
-  // 검색
+  // search
   $('searchInput').oninput = ()=>renderList();
-  // 다운로드
+  // downloads
   $('btnDlTxt').onclick = async ()=>{
     const t = await get('transcripts', currentReadId); if(!t) return;
     download(t.title+'.txt', txtOf(t), 'text/plain;charset=utf-8');
@@ -1202,7 +1202,7 @@ async function init(){
     const t = await get('transcripts', currentReadId); if(!t) return;
     download(t.title+'.srt', toSRT(t.segments.map(s=>({start:s.start,end:s.end,text:`[${s.speaker}] ${s.text}`}))), 'text/plain;charset=utf-8');
   };
-  // 설정
+  // settings
   const st = await get('settings','audioPolicy');
   $('audioPolicy').value = st ? st.v : '3days';
   $('audioPolicy').onchange = async e=>{
@@ -1214,38 +1214,38 @@ async function init(){
   $('whisperModel').onchange = async e=>{
     Engines.whisperModel = e.target.value;
     await put('settings',{k:'whisperModel', v:e.target.value});
-    Engines.resetWhisperWorker(); // 다음 전사부터 새 모델로 로드
+    Engines.resetWhisperWorker(); // load the new model from the next transcription
     await Engines.checkCache();
     await refreshModelStatus();
   };
   $('btnWipe').onclick = async ()=>{
-    if (!confirm('정말 모든 데이터를 삭제할까요? 되돌릴 수 없습니다.')) return;
+    if (!confirm('Really delete all data? This cannot be undone.')) return;
     for (const s of ['transcripts','audio','checkpoints','settings']) await clearStore(s);
-    alert('삭제됐습니다.'); showScreen('scr-start');
+    alert('Deleted.'); showScreen('scr-start');
   };
-  // 모델 미리받기
+  // model pre-download
   Engines.onProgress = (engine,file,loaded,total)=>{
     $('modelProgWrap').style.display='block';
     const pct = total>0 ? Math.round(loaded/total*100) : 0;
     $('modelProg').style.width = pct+'%';
-    $('modelStatus').textContent = `${engine} 다운로드 중… ${pct}% (${file})`;
+    $('modelStatus').textContent = `${engine} downloading… ${pct}% (${file})`;
   };
   $('btnPreload').onclick = async ()=>{
     const btn = $('btnPreload');
     if (Engines.parakeetReady||Engines.parakeetCached) return;
-    const det = $('modelDetails'); if (det) det.open = true; // 다운로드 진행률이 보이게 펼침
+    const det = $('modelDetails'); if (det) det.open = true; // expand so the download progress is visible
     btn.disabled = true;
-    btn.textContent = '모델 준비 중…';
-    // 클릭 즉시 피드백: 엔진 로딩 단계에서는 파일 진행률이 없어 바로 표시
+    btn.textContent = 'Preparing model…';
+    // instant click feedback: engine-loading has no file progress, so show immediately
     $('modelProgWrap').style.display='block';
-    $('modelStatus').textContent = '엔진 로딩 중… (첫 단계는 시간이 걸릴 수 있습니다. 탭을 닫지 마세요)';
+    $('modelStatus').textContent = 'Loading engine… (the first step may take a while — keep this tab open)';
     try {
-      await Engines.preloadParakeet(); // 다운로드+캐시만, 세션은 만들지 않음
-      btn.textContent = '고품질 모델 설치됨 ✓';
+      await Engines.preloadParakeet(); // download + cache only, no session
+      btn.textContent = 'High-quality model installed ✓';
     }
     catch(e){
-      alert('모델 다운로드 실패: '+(e&&e.message||e));
-      btn.textContent = '고품질 모델 미리 받기 (661MB, 고사양 PC용)';
+      alert('Model download failed: '+(e&&e.message||e));
+      btn.textContent = 'Pre-download high-quality model (661MB, for high-spec PCs)';
       btn.disabled = false;
     }
     $('modelProgWrap').style.display='none';
@@ -1253,10 +1253,10 @@ async function init(){
   };
 
   await App.sweepRetention();
-  await Engines.checkCache(); // 이전에 받아둔 모델이 있으면 '설치됨' 표시
+  await Engines.checkCache(); // show 'Installed' for previously downloaded models
   await refreshModelStatus();
   await App.checkRecovery();
-  // 저장소 유지 요청 (eviction 방지)
+  // request storage persistence (prevent eviction)
   if (navigator.storage && navigator.storage.persist){
     try{ await navigator.storage.persist(); }catch(_){}
   }

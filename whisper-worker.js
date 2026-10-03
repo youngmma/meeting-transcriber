@@ -1,9 +1,9 @@
-/* 미팅 전사 — Whisper 전사 전용 Web Worker.
+/* Meeting Transcriber — Whisper-only Web Worker.
  *
- * 메인 스레드 멈춤("This page isn't responding") 방지를 위해
- * 무거운 ONNX 추론을 워커로 분리. 30초 이하의 PCM 윈도우 하나를
- * 받아 전사한 뒤 타임스탬프 청크 배열을 반환한다.
- * 모델 파일은 페이지와 같은 Cache API 캐시(cacheKey)를 공유한다.
+ * Split heavy ONNX inference into a worker to avoid
+ * main-thread freezes ("This page isn't responding"). Takes one
+ * PCM window (<=30s), transcribes it, and returns timestamped chunks.
+ * Model files share the page's Cache API cache (cacheKey).
  */
 import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.0/dist/transformers.min.js';
 
@@ -12,7 +12,7 @@ env.cacheKey = 'meeting-transcriber-whisper';
 let asr = null;
 let modelId = null;
 
-/** 30초 PCM으로 언어 감지 → 'ko'/'en' 등 2자리 코드. whisper의 언어 토큰을 직접 읽음 */
+/** Detect language from 30s of PCM → 2-letter code like 'ko'/'en', by reading whisper's language token directly */
 async function detectLanguage(pcm){
   const processed = await asr.processor(pcm);
   const startId = asr.model.config.decoder_start_token_id;
@@ -22,7 +22,7 @@ async function detectLanguage(pcm){
     max_new_tokens: 1,
   });
   const tokens = out[0].tolist(); // [startoftranscript, lang_token]
-  const langId = Number(tokens[1]); // tolist()는 BigInt 배열 → Number로 변환해야 비교됨
+  const langId = Number(tokens[1]); // tolist() returns BigInts → must convert to Number before comparing
   const langMap = (asr.model.generation_config && asr.model.generation_config.lang_to_id) || {};
   for (const tok in langMap){
     if (langMap[tok] === langId){
@@ -49,20 +49,20 @@ self.onmessage = async (e) => {
       });
       self.postMessage({ type: 'ready' });
     } else if (m.type === 'detect') {
-      if (!asr) throw new Error('모델이 초기화되지 않았습니다');
+      if (!asr) throw new Error('model not initialized');
       const language = await detectLanguage(m.pcm);
       self.postMessage({ type: 'detected', id: m.id, language });
     } else if (m.type === 'transcribe') {
-      if (!asr) throw new Error('모델이 초기화되지 않았습니다');
+      if (!asr) throw new Error('model not initialized');
       const out = await asr(m.pcm, {
         language: m.language || undefined,
         task: 'transcribe',
         return_timestamps: true,
         chunk_length_s: 30,
         stride_length_s: 0,
-        // 반복 환각 방지: 같은 3-gram이 두 번 나오면 금지 ("two types of" 무한루프 차단)
+        // anti-hallucination: ban any 3-gram appearing twice (blocks "two types of" infinite loops)
         no_repeat_ngram_size: 3,
-        // 30초 발화에 224 토큰이면 충분. 폭주 루프의 토큰 낭비(시간 낭비) 차단
+        // 224 tokens is plenty for 30s of speech; blocks token/time waste from runaway loops
         max_new_tokens: 224,
       });
       self.postMessage({ type: 'done', id: m.id, chunks: out.chunks || [] });

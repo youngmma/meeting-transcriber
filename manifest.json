@@ -1,7 +1,7 @@
 {
-  "name": "미팅 전사",
-  "short_name": "전사",
-  "description": "회사 회의를 녹음하고 로컬 AI로 전사하는 웹앱",
+  "name": "Meeting Transcriber",
+  "short_name": "Transcribe",
+  "description": "Record meetings and transcribe them with local AI",
   "id": "./index.html",
   "start_url": "./index.html",
   "scope": "./",

@@ -1,19 +1,19 @@
-/* 미팅 전사 — 오프라인 대응 서비스 워커.
+/* Meeting Transcriber — offline service worker.
  *
- * 원형: FED-Shell(github.com/git-fed/Build-Web-and-Mobile-Apps)의 sw.js
- * (오프라인 우선 PWA 셸 전략).
+ * Based on FED-Shell (github.com/git-fed/Build-Web-and-Mobile-Apps) sw.js
+ * (offline-first PWA shell strategy).
  *
- * 전략:
- *   - 앱 셸: 설치 시 선캐시, cache-first.
- *   - 버전 고정 CDN 자산: cache-first (불변 URL이라 안전).
- *   - 그 외 same-origin GET: stale-while-revalidate.
- *   - 내비게이션: network-first → 캐시 → offline.html.
+ * Strategy:
+ *   - app shell: precache on install, cache-first.
+ *   - version-pinned CDN assets: cache-first (immutable URLs, safe).
+ *   - other same-origin GETs: stale-while-revalidate.
+ *   - navigation: network-first → cache → offline.html.
  *
- * APP_VERSION은 앱 버전과 함께 올릴 것. 버전을 바꾸면 activate 단계에서
- * 이전 캐시가 자동 정리됨.
+ * Bump APP_VERSION together with the app version. Changing it clears the
+ * old cache during activate.
  */
 
-const APP_VERSION = '1.0.4';
+const APP_VERSION = '1.0.5';
 const SHELL_CACHE = `app-shell-${APP_VERSION}`;
 const RUNTIME_CACHE = `app-runtime-${APP_VERSION}`;
 
@@ -29,7 +29,7 @@ const SHELL_ASSET_PATHS = new Set(
   SHELL_ASSETS.map((asset) => new URL(asset, self.registration.scope).pathname),
 );
 
-// 버전이 고정된 CDN 자산 (불변 → cache-first가 안전)
+// version-pinned CDN assets (immutable → cache-first is safe)
 const CDN_PREFIXES = [];
 const isCdnAsset = (url) => CDN_PREFIXES.some((prefix) => url.startsWith(prefix));
 
