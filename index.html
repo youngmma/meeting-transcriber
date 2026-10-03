@@ -235,7 +235,7 @@ if ('serviceWorker' in navigator) {
       <div class="timer" id="elapsed">00:00:00</div>
       <div class="meter-row" id="sysMeterRow"><span class="lab">Others’ audio</span><div class="meter sys"><div id="mSys"></div></div></div>
       <div class="meter-row"><span class="lab">My voice</span><div class="meter"><div id="mMic"></div></div></div>
-      <div class="muted" id="txProg" style="margin-top:8px">Waiting to transcribe…</div>
+      <div class="muted" id="txProg" style="margin-top:8px">Recording…</div>
       <div class="progress" id="saveProgWrap" style="display:none;margin-top:8px"><div id="saveProg"></div></div>
     </div>
     <button class="btn btn-danger" id="btnStop" type="button">Stop and save</button>
@@ -938,9 +938,15 @@ const App = {
     }
     const w = this.txWin; // {d, t} per-30s-window progress of the current chunk
     const winTxt = (w && w.t>1) ? ` · part ${w.d}/${w.t}` : '';
-    const txt = this.meeting.chunksDone >= this.meeting.chunksTotal && this.meeting.chunksTotal>0
-      ? `Transcription done (${this.meeting.chunksTotal} chunks)`
-      : `Transcribing… ${this.meeting.chunksDone}/${this.meeting.chunksTotal} chunks${winTxt}`;
+    let txt;
+    if (this.meeting.chunksTotal === 0){
+      // Recording, no chunks finished yet (first 5 minutes)
+      txt = 'Recording… background transcription starts after 5 minutes';
+    } else if (this.meeting.chunksDone >= this.meeting.chunksTotal){
+      txt = `Transcription done (${this.meeting.chunksTotal} chunks)`;
+    } else {
+      txt = `Transcribing… ${this.meeting.chunksDone}/${this.meeting.chunksTotal} chunks${winTxt}`;
+    }
     const tp = $('txProg'); if (tp) tp.textContent = txt;
     const ri = $('recoveryInfo');
     if (ri && $('recoveryCard') && $('recoveryCard').style.display!=='none') ri.textContent = txt;
