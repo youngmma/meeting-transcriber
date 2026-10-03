@@ -783,10 +783,14 @@ const Engines = {
     for (let s=0; s<pcm.length; s+=STEP) starts.push(s);
     // language detection (once per chunk, first window). Without it transformers.js pins to English,
     // which turns Korean speech into English translations ("No language specified - defaulting to English")
-    let lang='en';
-    try {
-      lang = await this.detectLanguage(pcm.slice(0, Math.min(WIN, pcm.length)));
-    } catch(e){ console.warn('Language detection failed, defaulting to English:', e); }
+    // Cache across chunks: same session = same language, skip re-detection (~10s saved per chunk).
+    let lang = this._sessionLang || 'en';
+    if (!this._sessionLang){
+      try {
+        lang = await this.detectLanguage(pcm.slice(0, Math.min(WIN, pcm.length)));
+        this._sessionLang = lang;
+      } catch(e){ console.warn('Language detection failed, defaulting to English:', e); }
+    }
     const segs=[];
     for (let i=0;i<starts.length;i++){
       const s=starts[i];
@@ -830,6 +834,11 @@ const App = {
 
   async startRecording(){
     hideBanner('permErr');
+    // Pre-download whisper model NOW (while user handles permission popups),
+    // so background transcription of chunk 1 starts immediately at 5:00
+    // instead of waiting for a 77MB download mid-recording.
+    Engines.ensureWhisperWorker().catch(()=>{});
+    Engines._sessionLang = null; // reset language cache for new session
     const topic = $('topicInput').value;
     // 1) capture (permission popup)
     let cap;
