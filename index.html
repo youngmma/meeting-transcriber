@@ -588,8 +588,27 @@ const Engines = {
     this._worker=null; this._workerReady=null; this.whisperReady=false; this.whisper=null;
   },
 
+  /** 30초 PCM 언어 감지 → 'ko'/'en'. 실패 시 'en' */
+  async detectLanguage(pcm){
+    const w = await this.ensureWhisperWorker();
+    if (!w) return 'en';
+    const id = ++this._txSeq;
+    return new Promise((res)=>{
+      const h = (e)=>{
+        const m = e.data||{};
+        if (m.id!==id) return;
+        w.removeEventListener('message',h);
+        if (m.type==='detected' && m.language) res(m.language); else res('en');
+      };
+      w.addEventListener('message', h);
+      // 항상 복사본을 전송 (원본 버퍼를 transfer하면 호출자 배열이 비워짐)
+      const s = pcm.slice(0, Math.min(pcm.length, 480000));
+      w.postMessage({ type:'detect', id, pcm:s }, [s.buffer]);
+    });
+  },
+
   /** 30초 이하 PCM 윈도우 하나를 워커(또는 폴백)에서 전사 → 타임스탬프 청크 배열 */
-  async transcribeWindow(pcm){
+  async transcribeWindow(pcm, language){
     const w = await this.ensureWhisperWorker();
     if (w){
       const id = ++this._txSeq;
@@ -601,12 +620,12 @@ const Engines = {
           else if (m.type==='error'){ w.removeEventListener('message',h); rej(new Error(m.message)); }
         };
         w.addEventListener('message', h);
-        w.postMessage({ type:'transcribe', id, pcm }, [pcm.buffer]);
+        w.postMessage({ type:'transcribe', id, pcm, language }, [pcm.buffer]);
       });
     }
     // 폴백: 메인스레드 (구형 브라우저)
     const asr = await this.ensureWhisperMain();
-    const out = await asr(pcm, { task:'transcribe', return_timestamps:true,
+    const out = await asr(pcm, { language, task:'transcribe', return_timestamps:true,
       chunk_length_s:30, stride_length_s:0, no_repeat_ngram_size:3, max_new_tokens:224 });
     return out.chunks||[];
   },
@@ -664,11 +683,17 @@ const Engines = {
     const SR=16000, WIN=30*SR, STEP=25*SR, OVERLAP=5;
     const starts=[];
     for (let s=0; s<pcm.length; s+=STEP) starts.push(s);
+    // 언어 감지 (청크당 1회, 첫 윈도우 기준). 지정 안 하면 transformers.js가 영어로 고정해서
+    // 한글 음성이 영어로 번역돼 버림 ("No language specified - defaulting to English")
+    let lang='en';
+    try {
+      lang = await this.detectLanguage(pcm.slice(0, Math.min(WIN, pcm.length)));
+    } catch(e){ console.warn('언어 감지 실패, 영어 기본:', e); }
     const segs=[];
     for (let i=0;i<starts.length;i++){
       const s=starts[i];
       const wpcm=pcm.slice(s, Math.min(s+WIN, pcm.length));
-      const chunks=await this.transcribeWindow(wpcm);
+      const chunks=await this.transcribeWindow(wpcm, lang);
       const trim=i===0?0:OVERLAP; // 이전 윈도우와 겹치는 5초는 버림 (중복 방지)
       for (const c of chunks){
         const cs=c.timestamp[0], ce=c.timestamp[1];
@@ -679,7 +704,7 @@ const Engines = {
       }
       onWin && onWin(i+1, starts.length);
     }
-    return { segs: filterHallucinations(segs), engine:'whisper' };
+    return { segs: filterHallucinations(segs), engine:'whisper', language:lang };
   }
 };
 // E2E 테스트 훅 (읽기 전용 노출, 민감정보 없음)

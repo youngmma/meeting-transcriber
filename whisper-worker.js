@@ -12,6 +12,27 @@ env.cacheKey = 'meeting-transcriber-whisper';
 let asr = null;
 let modelId = null;
 
+/** 30초 PCM으로 언어 감지 → 'ko'/'en' 등 2자리 코드. whisper의 언어 토큰을 직접 읽음 */
+async function detectLanguage(pcm){
+  const processed = await asr.processor(pcm);
+  const startId = asr.model.config.decoder_start_token_id;
+  const out = await asr.model.generate({
+    inputs: processed.input_features,
+    decoder_input_ids: [[startId]],
+    max_new_tokens: 1,
+  });
+  const tokens = out[0].tolist(); // [startoftranscript, lang_token]
+  const langId = Number(tokens[1]); // tolist()는 BigInt 배열 → Number로 변환해야 비교됨
+  const langMap = (asr.model.generation_config && asr.model.generation_config.lang_to_id) || {};
+  for (const tok in langMap){
+    if (langMap[tok] === langId){
+      const m = /<\|([a-z]{2})\|>/.exec(tok);
+      if (m) return m[1];
+    }
+  }
+  return 'en';
+}
+
 self.onmessage = async (e) => {
   const m = e.data || {};
   try {
@@ -27,9 +48,14 @@ self.onmessage = async (e) => {
         }),
       });
       self.postMessage({ type: 'ready' });
+    } else if (m.type === 'detect') {
+      if (!asr) throw new Error('모델이 초기화되지 않았습니다');
+      const language = await detectLanguage(m.pcm);
+      self.postMessage({ type: 'detected', id: m.id, language });
     } else if (m.type === 'transcribe') {
       if (!asr) throw new Error('모델이 초기화되지 않았습니다');
       const out = await asr(m.pcm, {
+        language: m.language || undefined,
         task: 'transcribe',
         return_timestamps: true,
         chunk_length_s: 30,

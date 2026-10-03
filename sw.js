@@ -13,7 +13,7 @@
  * 이전 캐시가 자동 정리됨.
  */
 
-const APP_VERSION = '1.0.2';
+const APP_VERSION = '1.0.3';
 const SHELL_CACHE = `app-shell-${APP_VERSION}`;
 const RUNTIME_CACHE = `app-runtime-${APP_VERSION}`;
 
