@@ -282,8 +282,8 @@ if ('serviceWorker' in navigator) {
       <h2>Transcription engine</h2>
       <label class="lbl" for="whisperModel">Transcription model</label>
       <select id="whisperModel">
-        <option value="Xenova/whisper-small" selected>Standard (accurate, whisper-small)</option>
-        <option value="Xenova/whisper-base">Fast (2–3× faster, less accurate)</option>
+        <option value="Xenova/whisper-base" selected>Standard (fast, whisper-base)</option>
+        <option value="Xenova/whisper-small">Accurate (slower, whisper-small)</option>
       </select>
       <div class="muted" style="margin-top:6px">Both auto-detect Korean and English. Use Fast mode to shorten transcription time for long recordings.</div>
       <div class="muted" id="engineInfo" style="margin-top:8px">-</div>
@@ -628,7 +628,7 @@ const Engines = {
       const c = await caches.open('meeting-transcriber-whisper');
       const keys = await c.keys();
       // based on the selected multilingual model. English-only (.en) cache excluded
-      const mid = this.whisperModel || 'Xenova/whisper-small';
+      const mid = this.whisperModel || 'Xenova/whisper-base';
       this.whisperCached = keys.some(k=>k.url.includes('/'+mid+'/') && !k.url.includes('.en/'));
     }catch(_){ this.whisperCached = false; }
   },
@@ -647,7 +647,7 @@ const Engines = {
     return this.parakeet;
   },
 
-  whisperModel:'Xenova/whisper-small', // changeable in settings (whisper-base=fast)
+  whisperModel:'Xenova/whisper-base', // changeable in settings (whisper-small=accurate)
   _worker:null, _workerReady:null, _txSeq:0,
 
   /** Prepare the whisper worker (incl. model load). Returns null on failure → main-thread fallback */
@@ -1266,7 +1266,7 @@ async function refreshModelStatus(){
   const el = $('modelStatus');
   const parts = [];
   parts.push('High quality (parakeet): ' + (Engines.parakeetReady||Engines.parakeetCached ? 'Installed ✓' : 'Not downloaded'));
-  const wname = (Engines.whisperModel||'').split('/').pop() || 'whisper-small';
+  const wname = (Engines.whisperModel||'').split('/').pop() || 'whisper-base';
   parts.push(`Default (${wname}): ` + (Engines.whisperReady||Engines.whisperCached ? 'Installed ✓' : 'Not downloaded'));
   el.innerHTML = parts.map(esc).join('<br>');
   $('engineInfo').innerHTML = parts.map(esc).join('<br>') +
@@ -1305,7 +1305,7 @@ async function init(){
     await put('settings',{k:'audioPolicy', v:e.target.value});
   };
   const wm = await get('settings','whisperModel');
-  Engines.whisperModel = (wm && wm.v) || 'Xenova/whisper-small';
+  Engines.whisperModel = (wm && wm.v) || 'Xenova/whisper-base';
   $('whisperModel').value = Engines.whisperModel;
   $('whisperModel').onchange = async e=>{
     Engines.whisperModel = e.target.value;
