@@ -297,12 +297,33 @@ if ('serviceWorker' in navigator) {
     </div>
     <div class="card">
       <h2>Transcription engine</h2>
-      <label class="lbl" for="whisperModel">Transcription model</label>
-      <select id="whisperModel">
-        <option value="Xenova/whisper-base">Standard (fast, whisper-base)</option>
-        <option value="Xenova/whisper-small" selected>Accurate (slower, whisper-small)</option>
+      <div class="muted" style="margin-bottom:8px">Both auto-detect Korean and English.</div>
+      <div id="modelList"></div>
+    </div>
+    <div class="card">
+      <h2>Language</h2>
+      <label class="lbl" for="langSelect">Transcription language</label>
+      <select id="langSelect">
+        <option value="auto" selected>Auto-detect</option>
+        <option value="en">English</option>
+        <option value="ko">Korean</option>
       </select>
-      <div class="muted" style="margin-top:6px">Both auto-detect Korean and English. Use Fast mode to shorten transcription time for long recordings.</div>
+      <div class="muted" style="margin-top:6px">Pin to English for faster, more accurate English meetings.</div>
+    </div>
+    <div class="card">
+      <h2>Recording</h2>
+      <label class="lbl" for="silenceTimeout">Auto-stop on silence</label>
+      <select id="silenceTimeout">
+        <option value="5">After 5 minutes of silence</option>
+        <option value="10" selected>After 10 minutes of silence</option>
+        <option value="30">After 30 minutes of silence</option>
+        <option value="0">Never</option>
+      </select>
+    </div>
+    <div class="card">
+      <h2>Storage</h2>
+      <div class="muted" id="storageInfo">Calculating…</div>
+      <button class="btn btn-ghost btn-small" id="btnRefreshStorage" type="button" style="margin-top:8px">Refresh</button>
     </div>
     <div class="card">
       <h2>Appearance</h2>
@@ -778,8 +799,15 @@ const Engines = {
     // Cache across chunks: same session = same language, skip re-detection (~10s saved per chunk).
     let lang = this._sessionLang || 'en';
     if (!this._sessionLang){
+      // Pinned language from Settings skips auto-detection
       try {
-        lang = await this.detectLanguage(pcm.slice(0, Math.min(WIN, pcm.length)));
+        const lgSet = await get('settings','transcribeLang');
+        const pinned = lgSet ? lgSet.v : 'auto';
+        if (pinned && pinned !== 'auto'){
+          lang = pinned;
+        } else {
+          lang = await this.detectLanguage(pcm.slice(0, Math.min(WIN, pcm.length)));
+        }
         this._sessionLang = lang;
       } catch(e){ console.warn('Language detection failed, defaulting to English:', e); }
     }
@@ -868,10 +896,12 @@ const App = {
       const el = $('sysAudioWarn');
       const elapsed = (Date.now()-AudioCap.recStart)/1000;
       if (elapsed>15 && !cap.hasSystemAudio && !cap.micOnly) el.classList.add('show'); else el.classList.remove('show');
-      // 10 minutes of silence → forgotten-recording reminder
-      if (!this.silenceWarned && Date.now()-this.lastSound > 10*60*1000){
+      // silence timeout → forgotten-recording reminder (configurable in Settings)
+      const silSet = await get('settings','silenceTimeout');
+      const silMin = silSet ? parseInt(silSet.v,10) : 10;
+      if (silMin > 0 && !this.silenceWarned && Date.now()-this.lastSound > silMin*60*1000){
         this.silenceWarned = true;
-        if (confirm('No sound for 10 minutes. Still recording. Stop?')) this.stopRecording();
+        if (confirm(`No sound for ${silMin} minutes. Still recording. Stop?`)) this.stopRecording();
       }
       // auto-stop at 4 hours
       if (elapsed > 4*3600) this.stopRecording();
@@ -1331,15 +1361,119 @@ async function init(){
   $('audioPolicy').onchange = async e=>{
     await put('settings',{k:'audioPolicy', v:e.target.value});
   };
+  const MODELS = [
+    {id:'Xenova/whisper-base', name:'Standard', desc:'Fast · ~80MB'},
+    {id:'Xenova/whisper-small', name:'Accurate', desc:'Slower · ~250MB'},
+    {id:'Xenova/whisper-medium', name:'Best', desc:'Slowest · ~400MB (q4)'},
+  ];
+  async function isModelCached(modelId){
+    try{
+      const c = await caches.open('meeting-transcriber-whisper');
+      const keys = await c.keys();
+      return keys.some(k=>k.url.includes('/'+modelId+'/'));
+    }catch(_){ return false; }
+  }
+  async function deleteModelCache(modelId){
+    try{
+      const c = await caches.open('meeting-transcriber-whisper');
+      const keys = await c.keys();
+      let n = 0;
+      for (const k of keys){
+        if (k.url.includes('/'+modelId+'/')){ await c.delete(k); n++; }
+      }
+      return n;
+    }catch(_){ return 0; }
+  }
+  async function renderModelList(){
+    const box = $('modelList');
+    const current = Engines.whisperModel;
+    box.innerHTML = '';
+    for (const m of MODELS){
+      const cached = await isModelCached(m.id);
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border)';
+      const radio = document.createElement('input');
+      radio.type = 'radio'; radio.name = 'modelPick'; radio.value = m.id;
+      radio.checked = (m.id === current);
+      radio.onchange = ()=>selectModel(m.id);
+      const info = document.createElement('div');
+      info.style.flex = '1';
+      info.innerHTML = `<div><b>${m.name}</b> <span class="muted">· ${m.desc}</span></div>
+        <div class="muted" style="font-size:12px" id="mstat-${m.id.replace(/[^a-z0-9]/gi,'')}">${cached ? '✓ Downloaded' : 'Not downloaded'}</div>
+        <div style="display:none;height:4px;background:var(--border);border-radius:2px;margin-top:4px" id="mprog-${m.id.replace(/[^a-z0-9]/gi,'')}"><div style="height:100%;background:var(--accent);border-radius:2px;width:0%"></div></div>`;
+      row.append(radio, info);
+      if (cached && m.id !== current){
+        const del = document.createElement('button');
+        del.className = 'btn btn-ghost btn-small'; del.textContent = 'Delete';
+        del.onclick = async ()=>{
+          if (!confirm(`Delete ${m.name} model files?`)) return;
+          await deleteModelCache(m.id);
+          renderModelList();
+          updateStorageInfo();
+        };
+        row.append(del);
+      }
+      box.append(row);
+    }
+  }
+  async function selectModel(modelId){
+    Engines.whisperModel = modelId;
+    await put('settings',{k:'whisperModel', v:modelId});
+    Engines.resetWhisperWorker();
+    const cached = await isModelCached(modelId);
+    if (!cached){
+      // Download now with progress
+      const key = modelId.replace(/[^a-z0-9]/gi,'');
+      const statEl = document.getElementById('mstat-'+key);
+      const progEl = document.getElementById('mprog-'+key);
+      if (statEl) statEl.textContent = 'Downloading…';
+      if (progEl) progEl.style.display = 'block';
+      const bar = progEl ? progEl.firstChild : null;
+      Engines.onProgress = (eng, file, loaded, total)=>{
+        if (bar && total) bar.style.width = Math.round(loaded/total*100)+'%';
+        if (statEl && total) statEl.textContent = `Downloading… ${Math.round(loaded/1048576)}MB / ${Math.round(total/1048576)}MB`;
+      };
+      try{
+        await Engines.ensureWhisperWorker();
+        if (statEl) statEl.textContent = '✓ Downloaded';
+      }catch(e){
+        if (statEl) statEl.textContent = 'Download failed: '+String(e.message||e).slice(0,60);
+      }finally{
+        Engines.onProgress = null;
+        if (progEl) progEl.style.display = 'none';
+        renderModelList();
+      }
+    }
+    await Engines.checkCache();
+    updateStorageInfo();
+  }
   const wm = await get('settings','whisperModel');
   Engines.whisperModel = (wm && wm.v) || 'Xenova/whisper-small';
-  $('whisperModel').value = Engines.whisperModel;
-  $('whisperModel').onchange = async e=>{
-    Engines.whisperModel = e.target.value;
-    await put('settings',{k:'whisperModel', v:e.target.value});
-    Engines.resetWhisperWorker(); // load the new model from the next transcription
-    await Engines.checkCache();
+  await renderModelList();
+  const lg = await get('settings','transcribeLang');
+  $('langSelect').value = lg ? lg.v : 'auto';
+  $('langSelect').onchange = async e=>{
+    await put('settings',{k:'transcribeLang', v:e.target.value});
   };
+  const sil = await get('settings','silenceTimeout');
+  $('silenceTimeout').value = sil ? sil.v : '10';
+  $('silenceTimeout').onchange = async e=>{
+    await put('settings',{k:'silenceTimeout', v:e.target.value});
+  };
+  async function updateStorageInfo(){
+    const el = $('storageInfo');
+    try{
+      let total = 0;
+      if (navigator.storage && navigator.storage.estimate){
+        const est = await navigator.storage.estimate();
+        total = est.usage || 0;
+      }
+      el.textContent = `Using about ${Math.round(total/1048576)}MB in this browser.`;
+    }catch(_){ el.textContent = 'Could not measure storage.'; }
+  }
+  window.updateStorageInfo = updateStorageInfo;
+  $('btnRefreshStorage').onclick = updateStorageInfo;
+  updateStorageInfo();
   $('btnWipe').onclick = async ()=>{
     if (!confirm('Really delete all data? This cannot be undone.')) return;
     for (const s of ['transcripts','audio','checkpoints','settings']) await clearStore(s);
