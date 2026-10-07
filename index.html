@@ -679,8 +679,22 @@ const Engines = {
     const { pipeline, env } = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.0/dist/transformers.min.js');
     env.cacheKey = 'meeting-transcriber-whisper';
     const prog = (p)=>{ this.onProgress && this.onProgress('whisper', p.file||'', p.loaded||0, p.total||0); };
-    this.whisper = await pipeline('automatic-speech-recognition', this.whisperModel,
-      { device:'wasm', dtype:'q8', progress_callback:prog });
+    let device = 'wasm', dtype = 'q8';
+    try {
+      if (typeof navigator !== 'undefined' && navigator.gpu) {
+        const adapter = await navigator.gpu.requestAdapter();
+        if (adapter) { device = 'webgpu'; dtype = 'fp32'; }
+      }
+    } catch(_) {}
+    try {
+      this.whisper = await pipeline('automatic-speech-recognition', this.whisperModel,
+        { device, dtype, progress_callback:prog });
+    } catch(e) {
+      if (device !== 'wasm') {
+        this.whisper = await pipeline('automatic-speech-recognition', this.whisperModel,
+          { device:'wasm', dtype:'q8', progress_callback:prog });
+      } else throw e;
+    }
     this.whisperReady = true;
     return this.whisper;
   },
@@ -957,6 +971,9 @@ const App = {
     $('btnStop').disabled = true; $('btnStop').textContent = 'Saving…';
     const rl = $('recLabel'); if (rl) rl.textContent = 'Recording stopped';
     const rd = $('recDot'); if (rd){ rd.style.animation='none'; rd.style.background='#4caf50'; }
+    // reset audio level meters (they would otherwise stay frozen at last levels)
+    const mm = $('mMic'); if (mm) mm.style.width = '0%';
+    const ms = $('mSys'); if (ms) ms.style.width = '0%';
     const spw = $('saveProgWrap'); if (spw){ spw.style.display='block'; $('saveProg').style.width='0%'; }
     try {
       const lastBlob = await AudioCap.stop();

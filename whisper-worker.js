@@ -39,15 +39,36 @@ self.onmessage = async (e) => {
     if (m.type === 'init') {
       if (asr && modelId === m.model) { self.postMessage({ type: 'ready' }); return; }
       modelId = m.model;
-      asr = await pipeline('automatic-speech-recognition', modelId, {
-        device: 'wasm',
-        dtype: 'q8',
-        progress_callback: (p) => self.postMessage({
-          type: 'modelProgress',
-          file: p.file || '', loaded: p.loaded || 0, total: p.total || 0,
-        }),
-      });
-      self.postMessage({ type: 'ready' });
+      // Prefer WebGPU when available (much faster on GPUs, incl. integrated);
+      // fall back to WASM. WebGPU needs fp32 weights (q8 is WASM-only).
+      let device = 'wasm', dtype = 'q8';
+      try {
+        if (typeof navigator !== 'undefined' && navigator.gpu) {
+          const adapter = await navigator.gpu.requestAdapter();
+          if (adapter) { device = 'webgpu'; dtype = 'fp32'; }
+        }
+      } catch(_) { device = 'wasm'; dtype = 'q8'; }
+      try {
+        asr = await pipeline('automatic-speech-recognition', modelId, {
+          device, dtype,
+          progress_callback: (p) => self.postMessage({
+            type: 'modelProgress',
+            file: p.file || '', loaded: p.loaded || 0, total: p.total || 0,
+          }),
+        });
+      } catch(e) {
+        if (device !== 'wasm') {
+          // WebGPU failed (e.g. shader compile) → retry on WASM
+          asr = await pipeline('automatic-speech-recognition', modelId, {
+            device: 'wasm', dtype: 'q8',
+            progress_callback: (p) => self.postMessage({
+              type: 'modelProgress',
+              file: p.file || '', loaded: p.loaded || 0, total: p.total || 0,
+            }),
+          });
+        } else throw e;
+      }
+      self.postMessage({ type: 'ready', device });
     } else if (m.type === 'detect') {
       if (!asr) throw new Error('model not initialized');
       const language = await detectLanguage(m.pcm);
