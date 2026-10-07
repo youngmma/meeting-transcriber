@@ -13,7 +13,7 @@
  * old cache during activate.
  */
 
-const APP_VERSION = '1.0.23';
+const APP_VERSION = '1.0.24';
 const SHELL_CACHE = `app-shell-${APP_VERSION}`;
 const RUNTIME_CACHE = `app-runtime-${APP_VERSION}`;
 

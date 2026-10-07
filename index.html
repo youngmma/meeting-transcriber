@@ -958,7 +958,8 @@ const App = {
       return;
     }
     const w = this.txWin; // {d, t} per-30s-window progress of the current chunk
-    const winTxt = (w && w.t>1) ? ` · part ${w.d}/${w.t}` : '';
+    const winPct = (w && w.t>0) ? Math.round(w.d/w.t*100) : 0;
+    const winTxt = (w && w.t>1) ? ` · part ${w.d}/${w.t} (${winPct}%)` : '';
     let txt;
     if (this.meeting.chunksTotal === 0){
       // Recording, no chunks finished yet (first 5 minutes)
@@ -976,11 +977,18 @@ const App = {
     const tp = $('txProg'); if (tp) tp.textContent = txt;
     const ri = $('recoveryInfo');
     if (ri && $('recoveryCard') && $('recoveryCard').style.display!=='none') ri.textContent = txt;
-    // progress bar while saving (reflects per-window progress)
+    // progress bar: show during recording (live per-window progress) and saving
     const spw = $('saveProgWrap'), sp = $('saveProg');
-    if (sp && spw && spw.style.display!=='none' && this.meeting.chunksTotal>0){
-      const frac = (w && w.t>0) ? w.d/w.t : 0;
-      sp.style.width = Math.min(100, Math.round((this.meeting.chunksDone+frac)/this.meeting.chunksTotal*100))+'%';
+    if (sp && spw && this.meeting && this.meeting.chunksTotal>0){
+      const hasActiveTx = (w && w.t>0) || this.queue.length>0 || this.processing;
+      const isSaving = spw.style.display!=='none';
+      if (hasActiveTx || isSaving){
+        if (!isSaving) spw.style.display='block';
+        const frac = (w && w.t>0) ? w.d/w.t : 0;
+        sp.style.width = Math.min(100, Math.round((this.meeting.chunksDone+frac)/this.meeting.chunksTotal*100))+'%';
+      } else if (!isSaving){
+        spw.style.display='none';
+      }
     }
   },
 
