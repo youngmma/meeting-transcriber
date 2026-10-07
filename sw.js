@@ -11,7 +11,7 @@
  *
  * Bump APP_VERSION together with the app version. Changing it clears the
  * old cache during activate.
-*/
+ */
 
 const APP_VERSION = '1.0.15';
 const SHELL_CACHE = `app-shell-${APP_VERSION}`;
