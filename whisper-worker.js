@@ -81,6 +81,8 @@ self.onmessage = async (e) => {
         return_timestamps: true,
         chunk_length_s: 30,
         stride_length_s: 0,
+        // lower temperature = more deterministic, fewer hallucinations
+        temperature: 0.2,
         // anti-hallucination: ban any 3-gram appearing twice (blocks "two types of" infinite loops)
         no_repeat_ngram_size: 3,
         // 224 tokens is plenty for 30s of speech; blocks token/time waste from runaway loops

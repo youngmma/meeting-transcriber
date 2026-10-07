@@ -333,6 +333,19 @@ function filterHallucinations(segs){
     if (!n || b.has(n)) continue;                 // drop boilerplate phrases / empty segments
     if (n === prevNorm) { repeat++; if (repeat >= 2) continue; } // collapse repeats of 3+
     else { prevNorm = n; repeat = 0; }
+    // Gate: compression ratio — highly repetitive text is likely hallucination
+    const words = n.split(/\s+/);
+    if (words.length >= 12) {
+      const uniq = new Set(words);
+      if (uniq.size / words.length < 0.25) continue;
+    }
+    // Gate: abnormal length — >300 WPM or <3 words in >15s is suspicious
+    const dur = (g.end - g.start) || 0;
+    if (dur > 0) {
+      const wpm = words.length / (dur / 60);
+      if (wpm > 300) continue;
+      if (words.length < 3 && dur > 15) continue;
+    }
     out.push(g);
   }
   return out;
@@ -670,7 +683,7 @@ const Engines = {
     // fallback: main thread (older browsers)
     const asr = await this.ensureWhisperMain();
     const out = await asr(pcm, { language, task:'transcribe', return_timestamps:true,
-      chunk_length_s:30, stride_length_s:0, no_repeat_ngram_size:3, max_new_tokens:224 });
+      chunk_length_s:30, stride_length_s:0, no_repeat_ngram_size:3, max_new_tokens:224, temperature:0.2 });
     return out.chunks||[];
   },
 
