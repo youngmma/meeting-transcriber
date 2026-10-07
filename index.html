@@ -1054,6 +1054,7 @@ const App = {
     const spw = $('saveProgWrap'); if (spw){ spw.style.display='block'; $('saveProg').style.width='0%'; }
     try {
       const lastBlob = await AudioCap.stop();
+      this.updateTxProg(); // refresh status now that stopping=true (was showing stale "Recording…")
       if (lastBlob){ // last fragment (under 5 minutes)
         const idx = AudioCap.chunkIndex;
         await this.onAudioChunk(lastBlob, idx);
