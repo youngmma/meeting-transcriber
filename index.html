@@ -850,7 +850,7 @@ function groupWords(words){
 /* ============ recording session + transcription queue ============ */
 const App = {
   meeting:null, queue:[], processing:false, lastSound:0, silenceWarned:false,
-  audioEl:null,
+  audioEl:null, silenceTimeoutMin:10,
 
   async startRecording(){
     hideBanner('permErr');
@@ -897,8 +897,7 @@ const App = {
       const elapsed = (Date.now()-AudioCap.recStart)/1000;
       if (elapsed>15 && !cap.hasSystemAudio && !cap.micOnly) el.classList.add('show'); else el.classList.remove('show');
       // silence timeout → forgotten-recording reminder (configurable in Settings)
-      const silSet = await get('settings','silenceTimeout');
-      const silMin = silSet ? parseInt(silSet.v,10) : 10;
+      const silMin = this.silenceTimeoutMin || 10;
       if (silMin > 0 && !this.silenceWarned && Date.now()-this.lastSound > silMin*60*1000){
         this.silenceWarned = true;
         if (confirm(`No sound for ${silMin} minutes. Still recording. Stop?`)) this.stopRecording();
@@ -1465,8 +1464,10 @@ async function init(){
     await put('settings',{k:'transcribeLang', v:e.target.value});
   };
   const sil = await get('settings','silenceTimeout');
+  App.silenceTimeoutMin = sil ? parseInt(sil.v,10) : 10;
   $('silenceTimeout').value = sil ? sil.v : '10';
   $('silenceTimeout').onchange = async e=>{
+    App.silenceTimeoutMin = parseInt(e.target.value,10);
     await put('settings',{k:'silenceTimeout', v:e.target.value});
   };
   async function updateStorageInfo(){
