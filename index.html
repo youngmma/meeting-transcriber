@@ -217,7 +217,7 @@ if ('serviceWorker' in navigator) {
       ⑤ Allow the mic.<br>
       <br>
       - This sharing only lets this browser hear the audio — other participants are not notified.<br>
-      - Audio never leaves this device. Transcription happens here too, using whisper-base.<br>
+      - Audio never leaves this device. Transcription happens here too, using whisper-small.<br>
       - Transcripts are stored in the browser. Company policy may wipe them, so download important meetings as files.<br>
       - Don't close this tab while recording.</div>
     </details>
@@ -279,8 +279,8 @@ if ('serviceWorker' in navigator) {
       <h2>Transcription engine</h2>
       <label class="lbl" for="whisperModel">Transcription model</label>
       <select id="whisperModel">
-        <option value="Xenova/whisper-base" selected>Standard (fast, whisper-base)</option>
-        <option value="Xenova/whisper-small">Accurate (slower, whisper-small)</option>
+        <option value="Xenova/whisper-base">Standard (fast, whisper-base)</option>
+        <option value="Xenova/whisper-small" selected>Accurate (slower, whisper-small)</option>
       </select>
       <div class="muted" style="margin-top:6px">Both auto-detect Korean and English. Use Fast mode to shorten transcription time for long recordings.</div>
     </div>
@@ -587,12 +587,12 @@ const Engines = {
       const c = await caches.open('meeting-transcriber-whisper');
       const keys = await c.keys();
       // based on the selected multilingual model. English-only (.en) cache excluded
-      const mid = this.whisperModel || 'Xenova/whisper-base';
+      const mid = this.whisperModel || 'Xenova/whisper-small';
       this.whisperCached = keys.some(k=>k.url.includes('/'+mid+'/') && !k.url.includes('.en/'));
     }catch(_){ this.whisperCached = false; }
   },
 
-  whisperModel:'Xenova/whisper-base', // changeable in settings (whisper-small=accurate)
+  whisperModel:'Xenova/whisper-small',
   _worker:null, _workerReady:null, _txSeq:0,
 
   /** Prepare the whisper worker (incl. model load). Returns null on failure → main-thread fallback */
@@ -892,7 +892,12 @@ const App = {
       // Recording, no chunks finished yet (first 5 minutes)
       txt = 'Recording… background transcription starts after 5 minutes';
     } else if (this.meeting.chunksDone >= this.meeting.chunksTotal){
-      txt = `Transcription done (${this.meeting.chunksTotal} chunks)`;
+      // "done" is misleading while still recording — transcription only caught up so far
+      const n = this.meeting.chunksTotal;
+      const cn = n === 1 ? '1 chunk' : `${n} chunks`;
+      txt = AudioCap.stopping
+        ? `Transcription done (${cn})`
+        : 'Recording… transcription up to date';
     } else {
       txt = `Transcribing… ${this.meeting.chunksDone}/${this.meeting.chunksTotal} chunks${winTxt}`;
     }
@@ -1265,7 +1270,7 @@ async function init(){
     await put('settings',{k:'audioPolicy', v:e.target.value});
   };
   const wm = await get('settings','whisperModel');
-  Engines.whisperModel = (wm && wm.v) || 'Xenova/whisper-base';
+  Engines.whisperModel = (wm && wm.v) || 'Xenova/whisper-small';
   $('whisperModel').value = Engines.whisperModel;
   $('whisperModel').onchange = async e=>{
     Engines.whisperModel = e.target.value;
