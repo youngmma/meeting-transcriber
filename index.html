@@ -184,6 +184,7 @@ if ('serviceWorker' in navigator) {
 <body>
 <header class="top">
   <h1 id="brandHome" style="cursor:pointer" title="Home">Meeting Transcriber</h1>
+  <button id="recBanner" class="btn btn-danger btn-small" style="display:none;margin-left:8px" type="button" title="Return to recording">● Recording</button>
   <div class="spacer"></div>
   <button class="icon-btn" id="navList" type="button">List</button>
   <button class="icon-btn" id="navSettings" type="button">Settings</button>
@@ -1007,6 +1008,7 @@ const App = {
       const spw2 = $('saveProgWrap'); if (spw2) spw2.style.display='none';
       this.meeting = null;
       window.onbeforeunload = null;
+      try { document.getElementById('recBanner').style.display='none'; } catch(_){}
       showScreen('scr-list'); renderList();
       try {
         const adl = sessionStorage.getItem('mt-autodl');
@@ -1150,6 +1152,11 @@ const App = {
 function showScreen(id){
   document.querySelectorAll('.screen').forEach(s=>s.classList.toggle('active', s.id===id));
   window.scrollTo(0,0);
+  // Recording-in-progress banner: visible on all screens except the rec screen itself
+  try {
+    const rb = document.getElementById('recBanner');
+    if (rb) rb.style.display = (App.meeting && id!=='scr-rec') ? '' : 'none';
+  } catch(_){}
 }
 function hideBanner(id){ $(id).classList.remove('show'); }
 function fmtDur(sec){ sec=Math.floor(sec);
@@ -1256,6 +1263,7 @@ function txtOf(t){
 async function init(){
   // screen switching
   $('brandHome').onclick = ()=>showScreen(App.meeting ? 'scr-rec' : 'scr-start');
+  $('recBanner').onclick = ()=>showScreen('scr-rec');
   if (!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia)){
     const mn = $('micOnlyNote'); if (mn) mn.style.display='block';
   }
