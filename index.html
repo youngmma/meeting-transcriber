@@ -30,6 +30,25 @@
     --ring:0 0 0 3px rgba(91,155,255,.32);
   }
 }
+/* Manual theme override via Settings */
+html[data-theme="dark"]{
+  --navy:#182c4c; --navy-dark:#101f38; --accent:#5b9bff; --accent-dark:#3d7ef0;
+  --bg:#0e131a; --surface:#161d27; --text:#e8edf3; --muted:#8b96a5;
+  --border:#26303d; --danger:#e56a6a; --danger-dark:#c74f4f;
+  --ok:#34c98e; --warn:#d9a441;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35);
+  --shadow-md:0 4px 14px rgba(0,0,0,.4);
+  --ring:0 0 0 3px rgba(91,155,255,.32);
+}
+html[data-theme="light"]{
+  --navy:#1e3a5f; --navy-dark:#152a45; --accent:#2f7cf6; --accent-dark:#1f63d8;
+  --bg:#f2f4f7; --surface:#ffffff; --text:#1a2333; --muted:#5f6b7a;
+  --border:#e2e8f0; --danger:#d64545; --danger-dark:#b23333;
+  --ok:#1e9e6a; --warn:#b7791f;
+  --shadow-sm:0 1px 2px rgba(16,24,40,.06);
+  --shadow-md:0 4px 14px rgba(16,24,40,.09);
+  --ring:0 0 0 3px rgba(47,124,246,.28);
+}
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
 ::selection{background:rgba(47,124,246,.22)}
@@ -284,6 +303,15 @@ if ('serviceWorker' in navigator) {
         <option value="Xenova/whisper-small" selected>Accurate (slower, whisper-small)</option>
       </select>
       <div class="muted" style="margin-top:6px">Both auto-detect Korean and English. Use Fast mode to shorten transcription time for long recordings.</div>
+    </div>
+    <div class="card">
+      <h2>Appearance</h2>
+      <label class="lbl" for="themeSelect">Theme</label>
+      <select id="themeSelect">
+        <option value="system" selected>System</option>
+        <option value="dark">Dark</option>
+        <option value="light">Light</option>
+      </select>
     </div>
     <div class="card">
       <h2>Diagnostics</h2>
@@ -1149,6 +1177,11 @@ const App = {
 };
 
 /* ============ UI ============ */
+function applyTheme(theme){
+  const htmlEl = document.documentElement;
+  if (!theme || theme==='system') htmlEl.removeAttribute('data-theme');
+  else htmlEl.setAttribute('data-theme', theme);
+}
 function showScreen(id){
   document.querySelectorAll('.screen').forEach(s=>s.classList.toggle('active', s.id===id));
   window.scrollTo(0,0);
@@ -1287,6 +1320,14 @@ async function init(){
   // settings
   const st = await get('settings','audioPolicy');
   $('audioPolicy').value = st ? st.v : '3days';
+  const th = await get('settings','theme');
+  const themeVal = th ? th.v : 'system';
+  $('themeSelect').value = themeVal;
+  applyTheme(themeVal);
+  $('themeSelect').onchange = async e=>{
+    applyTheme(e.target.value);
+    await put('settings',{k:'theme', v:e.target.value});
+  };
   $('audioPolicy').onchange = async e=>{
     await put('settings',{k:'audioPolicy', v:e.target.value});
   };
