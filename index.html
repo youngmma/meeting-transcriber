@@ -1255,7 +1255,7 @@ function txtOf(t){
 
 async function init(){
   // screen switching
-  $('brandHome').onclick = ()=>showScreen('scr-start');
+  $('brandHome').onclick = ()=>showScreen(App.meeting ? 'scr-rec' : 'scr-start');
   if (!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia)){
     const mn = $('micOnlyNote'); if (mn) mn.style.display='block';
   }
