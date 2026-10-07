@@ -1059,8 +1059,8 @@ const App = {
         const idx = AudioCap.chunkIndex;
         await this.onAudioChunk(lastBlob, idx);
       }
-      // wait until the queue drains
-      while (this.queue.length || this.processing) await new Promise(r=>setTimeout(r,500));
+      // wait until the queue drains (refresh progress UI so user sees which chunk is transcribing)
+      while (this.queue.length || this.processing){ this.updateTxProg(); await new Promise(r=>setTimeout(r,500)); }
       await this.finalize(m.id);
     } finally {
       $('btnStop').disabled = false; $('btnStop').textContent = 'Stop and save';
