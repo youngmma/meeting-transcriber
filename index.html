@@ -1013,7 +1013,9 @@ const App = {
           : 'Recording… transcription up to date';
       }
     } else {
-      txt = `Transcribing… ${this.meeting.chunksDone}/${this.meeting.chunksTotal} chunks${winTxt}`;
+      const eta = this._getETA();
+      const etaTxt = eta ? ` · ${this._fmtETA(eta)}` : '';
+      txt = `Transcribing… ${this.meeting.chunksDone}/${this.meeting.chunksTotal} chunks${winTxt}${etaTxt}`;
     }
     const tp = $('txProg'); if (tp) tp.textContent = txt;
     const ri = $('recoveryInfo');
@@ -1048,9 +1050,25 @@ const App = {
     } finally { this.processing = false; this._releaseWakeLock(); }
   },
 
+  // P15: ETA tracking
+  _chunkTimes: [],
+  _chunkStart: 0,
+  _getETA(){
+    if (!this.meeting || !this._chunkTimes.length) return null;
+    const remaining = this.meeting.chunksTotal - this.meeting.chunksDone;
+    if (remaining <= 0) return null;
+    const avg = this._chunkTimes.reduce((a,b)=>a+b,0) / this._chunkTimes.length;
+    return Math.round(remaining * avg / 1000);
+  },
+  _fmtETA(sec){
+    if (sec < 60) return `about ${sec}s left`;
+    const m = Math.floor(sec/60);
+    return `about ${m} min left`;
+  },
   async transcribeJob({meetingId, chunkIndex}){
     const rec = await get('audio', [meetingId, chunkIndex]);
     if (!rec) return;
+    this._chunkStart = Date.now();
     try {
       const pcm = await Engines.resample16k(rec.blob);
       const offset = chunkIndex * CHUNK_SEC;
@@ -1069,6 +1087,11 @@ const App = {
       engByChunk[chunkIndex] = engine;
       await put('checkpoints', { ...(cp||{}), meetingId, segmentsByChunk:byChunk, enginesByChunk:engByChunk });
       this._consecFails = 0; // P8: reset on success
+      // P15: record chunk time
+      if (this._chunkStart){
+        this._chunkTimes.push(Date.now() - this._chunkStart);
+        if (this._chunkTimes.length > 5) this._chunkTimes.shift();
+      }
     } catch(e){
       // P8: Track consecutive failures
       this._consecFails = (this._consecFails||0) + 1;
@@ -1334,10 +1357,12 @@ async function renderList(){
       await del('checkpoints', t.id);
       renderList();
     };
+    // P11: Retry button for partial failures (has note with error)
+    const hasFailed = t.note && (t.note.includes('failed') || t.note.includes('Failed'));
     // P7: Retry button for failed transcriptions (0 segments)
-    if ((t.segCount||0) === 0){
+    if ((t.segCount||0) === 0 || hasFailed){
       const retryBtn = document.createElement('button'); retryBtn.className='btn btn-small';
-      retryBtn.type='button'; retryBtn.textContent='Retry';
+      retryBtn.type='button'; retryBtn.textContent = (t.segCount||0) === 0 ? 'Retry' : 'Retry failed';
       retryBtn.style.marginLeft = '4px';
       retryBtn.onclick = async ()=>{
         if (!confirm(`Retry transcription for "${t.title}"?`)) return;
@@ -1599,12 +1624,21 @@ async function init(){
   async function updateStorageInfo(){
     const el = $('storageInfo');
     try{
-      let total = 0;
+      let total = 0, quota = 0;
       if (navigator.storage && navigator.storage.estimate){
         const est = await navigator.storage.estimate();
         total = est.usage || 0;
+        quota = est.quota || 0;
       }
-      el.textContent = `Using about ${Math.round(total/1048576)}MB in this browser.`;
+      let txt = `Using about ${Math.round(total/1048576)}MB in this browser.`;
+      // P10: Warn if storage > 90% full
+      if (quota > 0 && total / quota > 0.9){
+        txt += ` ⚠️ Storage almost full (${Math.round(total/quota*100)}%). Old recordings may be auto-deleted.`;
+        el.style.color = 'var(--warn, #b7791f)';
+      } else {
+        el.style.color = '';
+      }
+      el.textContent = txt;
     }catch(_){ el.textContent = 'Could not measure storage.'; }
   }
   window.updateStorageInfo = updateStorageInfo;
