@@ -1703,9 +1703,13 @@ async function init(){
         downloaded = await isModelCached(mid);
       }
     } catch(_){}
-    const dlTxt = downloaded ? '' : ' (not downloaded)';
-    b.textContent = mshort ? backend + ' · ' + mshort + dlTxt : backend;
-    b.title = 'Backend: ' + backend + (mshort ? ', Model: ' + mshort + (downloaded ? '' : ' (not downloaded)') : '');
+    if (mshort && !downloaded){
+      b.textContent = backend + ' · no model downloaded';
+      b.title = 'Backend: ' + backend + '. Selected model (' + mshort + ') is not downloaded.';
+    } else {
+      b.textContent = mshort ? backend + ' · ' + mshort : backend;
+      b.title = 'Backend: ' + backend + (mshort ? ', Model: ' + mshort : '');
+    }
     if (!downloaded) b.style.borderColor = 'var(--warn, #b7791f)';
     else b.style.borderColor = '';
   }
