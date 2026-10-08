@@ -62,7 +62,19 @@ self.onmessage = async (e) => {
           }),
         });
       } catch(e) {
-        if (device !== 'wasm') {
+        // q8 OOM → try q4 (half size) for small/medium models
+        const isOOM = /bad_alloc|out of memory|memory/i.test(String((e && e.message) || e));
+        if (isOOM && dtype === 'q8' && /whisper-(small|medium)/.test(modelId)) {
+          self.postMessage({ type: 'modelProgress', file: 'retrying with q4 (smaller)', loaded: 0, total: 1 });
+          asr = await pipeline('automatic-speech-recognition', modelId, {
+            device, dtype: 'q4',
+            progress_callback: (p) => self.postMessage({
+              type: 'modelProgress',
+              file: p.file || '', loaded: p.loaded || 0, total: p.total || 0,
+            }),
+          });
+          self.postMessage({ type: 'q4fallback' });
+        } else if (device !== 'wasm') {
           // WebGPU failed (e.g. shader compile) → retry on WASM
           asr = await pipeline('automatic-speech-recognition', modelId, {
             device: 'wasm', dtype: 'q8',

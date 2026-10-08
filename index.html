@@ -676,6 +676,7 @@ const Engines = {
           if (m.type==='ready'){ clearTimeout(to); w.removeEventListener('message',h); w.removeEventListener('error',herr); res(w); }
           else if (m.type==='error' && !m.id){ clearTimeout(to); w.removeEventListener('message',h); w.removeEventListener('error',herr); rej(new Error(m.message)); }
           else if (m.type==='modelProgress'){ this.onProgress && this.onProgress('whisper', m.file, m.loaded, m.total); }
+          else if (m.type==='q4fallback'){ this._q4fallback = true; }
         };
         // if the worker script itself fails to load (firewall etc.), no message ever arrives — detect via error event
         const herr = ()=>{ clearTimeout(to); w.removeEventListener('message',h); w.removeEventListener('error',herr); rej(new Error('worker script load failed')); };
