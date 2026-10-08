@@ -686,7 +686,9 @@ const Engines = {
       w.postMessage({ type:'init', model });
       try { const wr = await ready; this.whisperWorkerReady = true; return wr; }
       catch(e){ console.warn('Worker init failed, falling back to main thread:', e);
-        try{ w.terminate(); }catch(_){} this._worker=null; return null; }
+        try{ w.terminate(); }catch(_){} this._worker=null;
+        // Clear cache so next call retries instead of returning cached null
+        this._workerReady = null; return null; }
     })();
     return this._workerReady;
   },
