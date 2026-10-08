@@ -86,21 +86,25 @@ self.onmessage = async (e) => {
             self.postMessage({ type: 'q4fallback' });
           } catch(e3) { asr = null; }
         }
+        // P2: If small/medium/turbo fails with OOM, fallback to base (before giving up)
+        // Cycle 1 fix: moved BEFORE the throw so WASM devices also get base fallback
+        if (!asr && isOOM && /whisper-(small|medium|large)/.test(modelId)){
+          self.postMessage({ type: 'modelProgress', file: 'falling back to base model', loaded: 0, total: 1 });
+          try {
+            const baseId = 'Xenova/whisper-base';
+            asr = await pipeline('automatic-speech-recognition', baseId, {
+              device: 'wasm', dtype: 'q8', progress_callback: progCb,
+            });
+            modelId = baseId;
+            self.postMessage({ type: 'baseFallback' });
+          } catch(eb) { asr = null; }
+        }
         if (!asr) {
           if (device !== 'wasm') {
             // Last resort: WASM q8
-            asr = await tryLoad('wasm', 'q8');
-          } else throw e;
-        }
-        // P2: If small/medium/turbo still fails with OOM, fallback to base
-        if (!asr && isOOM && /whisper-(small|medium|large)/.test(modelId)){
-          self.postMessage({ type: 'modelProgress', file: 'falling back to base model', loaded: 0, total: 1 });
-          const baseId = 'Xenova/whisper-base';
-          asr = await pipeline('automatic-speech-recognition', baseId, {
-            device: 'wasm', dtype: 'q8', progress_callback: progCb,
-          });
-          modelId = baseId;
-          self.postMessage({ type: 'baseFallback' });
+            try { asr = await tryLoad('wasm', 'q8'); } catch(e4) { asr = null; }
+          }
+          if (!asr) throw e;
         }
       }
       self.postMessage({ type: 'ready', device, dtype, model: modelId });
