@@ -209,6 +209,7 @@ if ('serviceWorker' in navigator) {
   <button class="icon-btn" id="navList" type="button">List</button>
   <button class="icon-btn" id="navSettings" type="button">Settings</button>
 </header>
+<div class="banner info" id="updateBanner" style="margin:10px auto;max-width:900px;display:none">A new version is available. <button class="btn btn-small" id="btnUpdateApp" type="button" style="margin-left:8px">Update now</button></div>
 <main>
   <!-- start screen -->
   <section class="screen active" id="scr-start">
@@ -677,10 +678,14 @@ const Engines = {
           const m = e.data||{};
           if (m.type==='ready'){ clearTimeout(to); w.removeEventListener('message',h); w.removeEventListener('error',herr);
             try { if (typeof refreshModelStatus === 'function') refreshModelStatus().catch(()=>{}); } catch(_){}
+            w._activeDevice = m.device || null; w._activeDtype = m.dtype || null; w._activeModel = m.model || null;
             res(w); }
           else if (m.type==='error' && !m.id){ clearTimeout(to); w.removeEventListener('message',h); w.removeEventListener('error',herr); rej(new Error(m.message)); }
           else if (m.type==='modelProgress'){ this.onProgress && this.onProgress('whisper', m.file, m.loaded, m.total); }
           else if (m.type==='q4fallback'){ this._q4fallback = true; }
+          else if (m.type==='baseFallback'){ this._baseFallback = true; this._activeModel = 'Xenova/whisper-base';
+            try { if (typeof updateEngineBadge==='function') updateEngineBadge(); } catch(_){}
+            try { if (typeof updateModelStatusNote==='function') updateModelStatusNote(); } catch(_){} }
         };
         // if the worker script itself fails to load (firewall etc.), no message ever arrives — detect via error event
         const herr = ()=>{ clearTimeout(to); w.removeEventListener('message',h); w.removeEventListener('error',herr); rej(new Error('worker script load failed')); };
@@ -688,11 +693,14 @@ const Engines = {
         w.addEventListener('error', herr);
       });
       w.postMessage({ type:'init', model });
-      try { const wr = await ready; this.whisperWorkerReady = true; return wr; }
+      try { const wr = await ready; this.whisperWorkerReady = true;
+        this._workerFailed = false;
+        if (wr && wr._activeDevice){ this._activeDevice = wr._activeDevice; this._activeDtype = wr._activeDtype; this._activeModel = wr._activeModel; }
+        return wr; }
       catch(e){ console.warn('Worker init failed, falling back to main thread:', e);
         try{ w.terminate(); }catch(_){} this._worker=null;
         // Clear cache so next call retries instead of returning cached null
-        this._workerReady = null; return null; }
+        this._workerReady = null; this._workerFailed = true; return null; }
     })();
     return this._workerReady;
   },
@@ -702,18 +710,21 @@ const Engines = {
     try{ this._worker && this._worker.terminate(); }catch(_){}
     this._worker=null; this._workerReady=null; this.whisperReady=false; this.whisper=null;
     this.whisperWorkerReady=false;
+    this._activeDevice=null; this._activeDtype=null; this._activeModel=null;
+    this._baseFallback=false; this._q4fallback=false; this._workerFailed=false;
   },
 
   /** Language detection from 30s of PCM → 'ko'/'en'. Falls back to 'en' */
   async detectLanguage(pcm){
     const w = await this.ensureWhisperWorker();
-    if (!w) return 'en';
+    if (!w) return null; // v1.0.32: never force English; Whisper auto-detects
     const id = ++this._txSeq;
     return new Promise((res)=>{
+      const to = setTimeout(()=>{ w.removeEventListener('message',h); res(null); }, 120000);
       const h = (e)=>{
         const m = e.data||{};
         if (m.id!==id) return;
-        w.removeEventListener('message',h);
+        clearTimeout(to); w.removeEventListener('message',h);
         // If detection fails, return null (not 'en') so Whisper auto-detects during transcription
         if (m.type==='detected' && m.language) res(m.language); else res(null);
       };
@@ -730,11 +741,15 @@ const Engines = {
     if (w){
       const id = ++this._txSeq;
       return new Promise((res, rej)=>{
+        // 10-min timeout: if the worker was killed (memory pressure), fail fast
+        // instead of hanging forever ("Saving…" stuck). Caller records the error.
+        const to = setTimeout(()=>{ w.removeEventListener('message',h);
+          rej(new Error('transcription timeout: worker unresponsive (10 min)')); }, 600000);
         const h = (e)=>{
           const m = e.data||{};
           if (m.id!==id) return;
-          if (m.type==='done'){ w.removeEventListener('message',h); res(m.chunks||[]); }
-          else if (m.type==='error'){ w.removeEventListener('message',h); rej(new Error(m.message)); }
+          if (m.type==='done'){ clearTimeout(to); w.removeEventListener('message',h); res(m.chunks||[]); }
+          else if (m.type==='error'){ clearTimeout(to); w.removeEventListener('message',h); rej(new Error(m.message)); }
         };
         w.addEventListener('message', h);
         w.postMessage({ type:'transcribe', id, pcm, language }, [pcm.buffer]);
@@ -752,22 +767,38 @@ const Engines = {
     const { pipeline, env } = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.0/dist/transformers.min.js');
     env.cacheKey = 'meeting-transcriber-whisper';
     const prog = (p)=>{ this.onProgress && this.onProgress('whisper', p.file||'', p.loaded||0, p.total||0); };
-    let device = 'wasm', dtype = 'q8';
+    // Mirror the worker's device/dtype policy (turbo prefers q4 for size)
+    const isTurboModel = /whisper-large-v3-turbo/.test(this.whisperModel);
+    let device = 'wasm', dtype = isTurboModel ? 'q4' : 'q8';
     try {
-      if (typeof navigator !== 'undefined' && navigator.gpu) {
+      if (typeof navigator !== 'undefined' && navigator.gpu && !isTurboModel) {
         const adapter = await navigator.gpu.requestAdapter();
         const devMem = (typeof navigator.deviceMemory === 'number') ? navigator.deviceMemory : 8;
         if (adapter) { device = 'webgpu'; dtype = devMem >= 8 ? 'fp32' : 'q8'; }
       }
     } catch(_) {}
+    const tryMain = (dev, dt) => pipeline('automatic-speech-recognition', this.whisperModel,
+      { device:dev, dtype:dt, progress_callback:prog });
     try {
-      this.whisper = await pipeline('automatic-speech-recognition', this.whisperModel,
-        { device, dtype, progress_callback:prog });
+      this.whisper = await tryMain(device, dtype);
     } catch(e) {
+      const isOOM = /bad_alloc|out of memory|memory/i.test(String((e && e.message) || e));
       if (device !== 'wasm') {
-        this.whisper = await pipeline('automatic-speech-recognition', this.whisperModel,
-          { device:'wasm', dtype:'q8', progress_callback:prog });
-      } else throw e;
+        try { this.whisper = await tryMain('wasm', 'q8'); }
+        catch(_){ /* fall through to q4/base */ }
+      }
+      if (!this.whisper && isOOM && dtype !== 'q4') {
+        try { this.whisper = await tryMain('wasm', 'q4'); this._q4fallback = true; } catch(_){}
+      }
+      // P2: base fallback (same as worker)
+      if (!this.whisper && isOOM && /whisper-(small|medium|large)/.test(this.whisperModel)){
+        try {
+          this.whisper = await pipeline('automatic-speech-recognition', 'Xenova/whisper-base',
+            { device:'wasm', dtype:'q8', progress_callback:prog });
+          this._baseFallback = true;
+        } catch(_){}
+      }
+      if (!this.whisper) throw e;
     }
     this.whisperReady = true;
     return this.whisper;
@@ -864,8 +895,35 @@ const App = {
   meeting:null, queue:[], processing:false, lastSound:0, silenceWarned:false,
   audioEl:null, silenceTimeoutMin:10,
 
+  // P13: multi-tab coordination (avoid IndexedDB conflicts from two simultaneous recordings)
+  _tabId: 'tab-' + Math.random().toString(36).slice(2, 10),
+  _bc: null,
+  _otherTabRecording: false,
+  _initBroadcast(){
+    try {
+      if (!('BroadcastChannel' in window)) return;
+      this._bc = new BroadcastChannel('meeting-transcriber');
+      this._bc.onmessage = (e)=>{
+        const m = e.data || {};
+        if (m.from === this._tabId) return;
+        if (m.type === 'recording-started') this._otherTabRecording = true;
+        else if (m.type === 'recording-stopped') this._otherTabRecording = false;
+        else if (m.type === 'ping-recording' && this.meeting) {
+          this._bc.postMessage({ type:'recording-started', from:this._tabId });
+        }
+      };
+      // Ask if another tab is already recording
+      this._bc.postMessage({ type:'ping-recording', from:this._tabId });
+    } catch(_){}
+  },
+  _broadcast(type){ try{ this._bc && this._bc.postMessage({ type, from:this._tabId }); }catch(_){} },
+
   async startRecording(){
     hideBanner('permErr');
+    if (!this._bc) this._initBroadcast();
+    if (this._otherTabRecording){
+      if (!confirm('Another tab appears to be recording. Starting here may cause conflicts.\n\nStart anyway?')) return;
+    }
     // Pre-download whisper model NOW (while user handles permission popups),
     // so background transcription of chunk 1 starts immediately at 5:00
     // instead of waiting for a 77MB download mid-recording.
@@ -921,6 +979,7 @@ const App = {
       startedAt:this.meeting.startedAt, title:this.meeting.title,
       segmentsByChunk:{}, status:'recording' });
     this.lastSound = Date.now(); this.silenceWarned = false;
+    this._chunkTimes = []; this._consecFails = 0; // P15/P8: fresh per-meeting stats
 
     // 3) wire callbacks
     AudioCap.onChunk = (blob, idx)=>this.onAudioChunk(blob, idx);
@@ -946,6 +1005,7 @@ const App = {
       this.stopRecording();
     };
 
+    this._broadcast('recording-started');
     showScreen('scr-rec');
     const smr = $('sysMeterRow'); if (smr) smr.style.display = (cap && cap.micOnly) ? 'none' : '';
     const rl0 = $('recLabel'); if (rl0) rl0.textContent = 'Recording';
@@ -1001,7 +1061,10 @@ const App = {
     if (!this.meeting) return;
     // If whisper model is still downloading, show that instead of a stuck "0/N chunks"
     if (!Engines.whisperWorkerReady && !Engines.whisperReady){
-      const tp0 = $('txProg'); if (tp0) tp0.textContent = 'Downloading transcription model…';
+      const tp0 = $('txProg');
+      if (tp0) tp0.textContent = Engines._workerFailed
+        ? 'Transcription model failed to load — will retry automatically…'
+        : 'Downloading transcription model…';
       return;
     }
     const w = this.txWin; // {d, t} per-30s-window progress of the current chunk
@@ -1049,8 +1112,8 @@ const App = {
   },
 
   async pumpQueue(){
-    this._requestWakeLock();
     if (this.processing) return;
+    this._requestWakeLock();
     this.processing = true;
     try {
       while (this.queue.length){
@@ -1106,6 +1169,11 @@ const App = {
         if (this._chunkTimes.length > 5) this._chunkTimes.shift();
       }
     } catch(e){
+      // A tiny trailing chunk (< ~2s of audio, e.g. user stopped right after a
+      // 5-minute rotation) may not decode — skip silently instead of flagging an error.
+      // (Checked BEFORE P8 counting so it doesn't trip the consecutive-failure guard.)
+      const tiny = rec.blob && rec.blob.size < 12000;
+      if (tiny) return;
       // P8: Track consecutive failures
       this._consecFails = (this._consecFails||0) + 1;
       if (this._consecFails >= 3){
@@ -1119,10 +1187,6 @@ const App = {
         }
       }
       console.error('Chunk transcription failed', chunkIndex, e);
-      // A tiny trailing chunk (< ~2s of audio, e.g. user stopped right after a
-      // 5-minute rotation) may not decode — skip silently instead of flagging an error.
-      const tiny = rec.blob && rec.blob.size < 12000;
-      if (tiny) return;
       // P6: track failures for honest status
       if (this.meeting && this.meeting.id === meetingId){
         this.meeting.chunksFailed = (this.meeting.chunksFailed||0) + 1;
@@ -1163,12 +1227,23 @@ const App = {
         await this.onAudioChunk(lastBlob, idx);
       }
       // wait until the queue drains (refresh progress UI so user sees which chunk is transcribing)
-      while (this.queue.length || this.processing){ this.updateTxProg(); await new Promise(r=>setTimeout(r,500)); }
+      // 15-min cap: never hang forever on "Saving…" (worker timeouts + P8 make this rare)
+      const drainStart = Date.now();
+      while (this.queue.length || this.processing){
+        this.updateTxProg();
+        await new Promise(r=>setTimeout(r,500));
+        if (Date.now() - drainStart > 15*60*1000){
+          console.warn('Drain wait timed out after 15 min; finalizing with what we have.');
+          this.queue.length = 0;
+          break;
+        }
+      }
       await this.finalize(m.id);
     } finally {
       $('btnStop').disabled = false; $('btnStop').textContent = 'Stop and save';
       const spw2 = $('saveProgWrap'); if (spw2) spw2.style.display='none';
       this.meeting = null;
+      this._broadcast('recording-stopped');
       window.onbeforeunload = null;
       try { document.getElementById('recBanner').style.display='none'; } catch(_){}
       showScreen('scr-list'); renderList();
@@ -1552,8 +1627,6 @@ async function init(){
       if (!cached){
         const dl = document.createElement('button');
         dl.className = 'btn btn-ghost btn-small'; dl.textContent = 'Download';
-        // Cancel flag
-        let cancelled = false;
         dl.onclick = async ()=>{
           const key = m.id.replace(/[^a-z0-9]/gi,'');
           // Mark as downloading (to detect incomplete on refresh)
@@ -1563,28 +1636,33 @@ async function init(){
           if (statEl) statEl.textContent = 'Downloading…';
           if (progEl) progEl.style.display = 'block';
           const bar = progEl ? progEl.firstChild : null;
+          let cancelled = false;
+          let cancelReject = null;
+          const cancelPromise = new Promise((_, rej)=>{ cancelReject = rej; });
           dl.textContent = 'Cancel';
-          dl.disabled = false;
-          cancelled = false;
-          // Change to cancel mode
-          const origOnclick = dl.onclick;
           dl.onclick = ()=>{
             cancelled = true;
             if (statEl) statEl.textContent = 'Cancelling…';
+            // Kill the worker and clear the cached promise so the download
+            // actually stops and the next attempt starts fresh (no 180s hang).
+            try{ Engines._worker && Engines._worker.terminate(); }catch(_){}
+            Engines._worker = null; Engines._workerReady = null; Engines.whisperWorkerReady = false;
+            if (cancelReject) cancelReject(new Error('Download cancelled by user'));
           };
           Engines.onProgress = (eng, file, loaded, total)=>{
             if (cancelled) return;
             if (bar && total) bar.style.width = Math.round(loaded/total*100)+'%';
             if (statEl && total) statEl.textContent = `Downloading… ${Math.round(loaded/1048576)}MB / ${Math.round(total/1048576)}MB`;
           };
+          // Temporarily set model to download it
+          const prevModel = Engines.whisperModel;
           try{
-            // Temporarily set model to download it
-            const prevModel = Engines.whisperModel;
             Engines.whisperModel = m.id;
             Engines.resetWhisperWorker();
-            await Engines.ensureWhisperWorker();
-            Engines.whisperModel = prevModel;
-            Engines.resetWhisperWorker();
+            // ensureWhisperWorker resolves null (not throw) on failure — check it
+            const w = await Promise.race([Engines.ensureWhisperWorker(), cancelPromise]);
+            if (cancelled) throw new Error('Download cancelled by user');
+            if (!w) throw new Error('Model failed to load');
             try { localStorage.setItem('mt_dl_'+key, 'done'); } catch(_){}
             if (statEl) statEl.textContent = '✓ Downloaded';
           }catch(e){
@@ -1594,12 +1672,15 @@ async function init(){
               // Clean up partial download
               try { await deleteModelCache(m.id); } catch(_){}
             } else {
-              if (statEl) statEl.textContent = 'Download failed';
+              if (statEl) statEl.textContent = 'Download failed: ' + String((e&&e.message)||e).slice(0,60);
             }
           }finally{
+            Engines.whisperModel = prevModel;
+            Engines.resetWhisperWorker();
             Engines.onProgress = null;
             if (progEl) progEl.style.display = 'none';
-            // Restore download button
+            try { if (typeof updateModelStatusNote === 'function') updateModelStatusNote(); } catch(_){}
+            try { if (typeof updateEngineBadge === 'function') updateEngineBadge(); } catch(_){}
             setTimeout(()=>{ renderModelList(); updateStorageInfo(); }, cancelled ? 1000 : 0);
           }
         };
@@ -1641,13 +1722,19 @@ async function init(){
         if (statEl && total) statEl.textContent = `Downloading… ${Math.round(loaded/1048576)}MB / ${Math.round(total/1048576)}MB`;
       };
       try{
-        await Engines.ensureWhisperWorker();
+        // Mark as downloading (incomplete-download detection on refresh)
+        try { localStorage.setItem('mt_dl_'+key, 'downloading'); } catch(_){}
+        const w = await Engines.ensureWhisperWorker();
+        if (!w) throw new Error('Model failed to load');
+        try { localStorage.setItem('mt_dl_'+key, 'done'); } catch(_){}
         if (statEl) statEl.textContent = '✓ Downloaded';
       }catch(e){
+        try { localStorage.removeItem('mt_dl_'+key); } catch(_){}
         if (statEl) statEl.textContent = 'Download failed: '+String(e.message||e).slice(0,60);
       }finally{
         Engines.onProgress = null;
         if (progEl) progEl.style.display = 'none';
+        try { if (typeof updateModelStatusNote === 'function') updateModelStatusNote(); } catch(_){}
         renderModelList();
       }
     }
@@ -1696,20 +1783,31 @@ async function init(){
   async function updateEngineBadge(){
     const b = $('engineBadge');
     if (!b) return;
+    // Prefer the ACTUAL backend/model reported by the worker (it may differ from
+    // the selection: e.g. turbo forces WASM q4, P2 may fall back to base).
     let backend = 'WASM';
-    try {
-      if (navigator.gpu) {
-        const adapter = await navigator.gpu.requestAdapter();
-        backend = adapter ? 'WebGPU' : 'WASM';
-      }
-    } catch(_){}
-    // Model short name
-    const mid = (Engines && Engines.whisperModel) || '';
-    const mshort = mid.includes('turbo') ? 'turbo'
+    let activeDevice = Engines && Engines._activeDevice;
+    let activeModel = (Engines && Engines._activeModel) || (Engines && Engines.whisperModel) || '';
+    if (activeDevice){
+      backend = activeDevice === 'webgpu' ? 'WebGPU' : 'WASM';
+    } else {
+      try {
+        if (navigator.gpu) {
+          const adapter = await navigator.gpu.requestAdapter();
+          backend = adapter ? 'WebGPU' : 'WASM';
+        }
+      } catch(_){}
+    }
+    const shortOf = (mid)=> mid.includes('turbo') ? 'turbo'
       : mid.includes('tiny') ? 'tiny' : mid.includes('base') ? 'base'
       : mid.includes('small') ? 'small' : mid.includes('medium') ? 'medium'
       : mid.includes('large') ? 'large' : '';
-    // Check if model is downloaded
+    // Model short name
+    const mid = (Engines && Engines.whisperModel) || '';
+    const mshort = shortOf(mid);
+    const ashort = shortOf(activeModel);
+    const fellBack = ashort && mshort && ashort !== mshort;
+    // Check if selected model is downloaded
     let downloaded = true;
     try {
       if (mid && typeof isModelCached === 'function'){
@@ -1719,11 +1817,14 @@ async function init(){
     if (mshort && !downloaded){
       b.textContent = backend + ' · no model downloaded';
       b.title = 'Backend: ' + backend + '. Selected model (' + mshort + ') is not downloaded.';
+    } else if (fellBack){
+      b.textContent = backend + ' · ' + ashort + ' (fallback)';
+      b.title = 'Backend: ' + backend + '. Using ' + ashort + ' (fell back from ' + mshort + ').';
     } else {
       b.textContent = mshort ? backend + ' · ' + mshort : backend;
       b.title = 'Backend: ' + backend + (mshort ? ', Model: ' + mshort : '');
     }
-    if (!downloaded) b.style.borderColor = 'var(--warn, #b7791f)';
+    if (!downloaded || fellBack) b.style.borderColor = 'var(--warn, #b7791f)';
     else b.style.borderColor = '';
   }
   updateEngineBadge();
@@ -1750,6 +1851,27 @@ async function init(){
   updateModelStatusNote();
   // Refresh badge when model changes
   const _origSelectModel = typeof selectModel === 'function' ? selectModel : null;
+  // P25: notify when a new app version is available
+  (function(){
+    if (!('serviceWorker' in navigator)) return;
+    const showUpdate = ()=>{
+      const b = $('updateBanner');
+      if (b) b.style.display = 'block';
+    };
+    const btn = $('btnUpdateApp');
+    if (btn) btn.onclick = ()=>{ window.location.reload(); };
+    navigator.serviceWorker.ready.then((reg)=>{
+      reg.addEventListener('updatefound', ()=>{
+        const nw = reg.installing;
+        if (!nw) return;
+        nw.addEventListener('statechange', ()=>{
+          if (nw.state === 'installed' && navigator.serviceWorker.controller) showUpdate();
+        });
+      });
+    }).catch(()=>{});
+    // If a new SW took over while we were open, prompt for reload
+    navigator.serviceWorker.addEventListener('controllerchange', ()=>{ showUpdate(); });
+  })();
   // WebGPU + device memory status
   (async ()=>{
     const wg = $('webgpuStatus'), dm = $('deviceMemStatus');

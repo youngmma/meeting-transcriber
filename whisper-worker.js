@@ -90,8 +90,8 @@ self.onmessage = async (e) => {
             asr = await tryLoad('wasm', 'q8');
           } else throw e;
         }
-        // P2: If small/medium still fails with OOM, fallback to base
-        if (!asr && isOOM && /whisper-(small|medium)/.test(modelId)){
+        // P2: If small/medium/turbo still fails with OOM, fallback to base
+        if (!asr && isOOM && /whisper-(small|medium|large)/.test(modelId)){
           self.postMessage({ type: 'modelProgress', file: 'falling back to base model', loaded: 0, total: 1 });
           const baseId = 'Xenova/whisper-base';
           asr = await pipeline('automatic-speech-recognition', baseId, {
@@ -101,7 +101,7 @@ self.onmessage = async (e) => {
           self.postMessage({ type: 'baseFallback' });
         }
       }
-      self.postMessage({ type: 'ready', device });
+      self.postMessage({ type: 'ready', device, dtype, model: modelId });
     } else if (m.type === 'detect') {
       if (!asr) throw new Error('model not initialized');
       const language = await detectLanguage(m.pcm);
@@ -109,6 +109,11 @@ self.onmessage = async (e) => {
     } else if (m.type === 'transcribe') {
       if (!asr) throw new Error('model not initialized');
       // Domain prompts: user's main contexts (work + church, EN + KO)
+      // NOTE (UAT 2026-10-08): transformers.js 4.3.0 silently ignores the
+      // `initial_prompt` string option, so this is currently a no-op placeholder.
+      // A manual decoder_input_ids implementation was validated and REVERTED:
+      // it made whisper-base output garbage ("다리, 기원, 기웅, 기" vs good
+      // baseline). Kept as documentation of intent; harmless.
       const EN_PROMPT = 'State Department meeting, passport modernization, AIFM, TDIS, OCCAM pilot. Church sermon, Bible study, prayer meeting, David, Moses, Abraham, Jesus Christ, God, Holy Spirit.';
       const KO_PROMPT = '한국어 교회 설교, 성경 공부, 예배, 기도회, 순모임. 다윗, 모세, 아브라함, 예수님, 하나님, 성령님. 여호와, 이스라엘, 예루살렘.';
       const prompt = m.language === 'ko' ? KO_PROMPT
