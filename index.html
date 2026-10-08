@@ -673,7 +673,9 @@ const Engines = {
         const to = setTimeout(()=>rej(new Error('worker init timeout')), 180000);
         const h = (e)=>{
           const m = e.data||{};
-          if (m.type==='ready'){ clearTimeout(to); w.removeEventListener('message',h); w.removeEventListener('error',herr); res(w); }
+          if (m.type==='ready'){ clearTimeout(to); w.removeEventListener('message',h); w.removeEventListener('error',herr);
+            try { if (typeof refreshModelStatus === 'function') refreshModelStatus().catch(()=>{}); } catch(_){}
+            res(w); }
           else if (m.type==='error' && !m.id){ clearTimeout(to); w.removeEventListener('message',h); w.removeEventListener('error',herr); rej(new Error(m.message)); }
           else if (m.type==='modelProgress'){ this.onProgress && this.onProgress('whisper', m.file, m.loaded, m.total); }
           else if (m.type==='q4fallback'){ this._q4fallback = true; }
@@ -710,7 +712,8 @@ const Engines = {
         const m = e.data||{};
         if (m.id!==id) return;
         w.removeEventListener('message',h);
-        if (m.type==='detected' && m.language) res(m.language); else res('en');
+        // If detection fails, return null (not 'en') so Whisper auto-detects during transcription
+        if (m.type==='detected' && m.language) res(m.language); else res(null);
       };
       w.addEventListener('message', h);
       // always transfer a copy (transferring the original buffer empties the caller's array)
@@ -803,7 +806,7 @@ const Engines = {
     // language detection (once per chunk, first window). Without it transformers.js pins to English,
     // which turns Korean speech into English translations ("No language specified - defaulting to English")
     // Cache across chunks: same session = same language, skip re-detection (~10s saved per chunk).
-    let lang = this._sessionLang || 'en';
+    let lang = this._sessionLang || null;
     if (!this._sessionLang){
       // Pinned language from Settings skips auto-detection
       try {
@@ -814,8 +817,9 @@ const Engines = {
         } else {
           lang = await this.detectLanguage(pcm.slice(0, Math.min(WIN, pcm.length)));
         }
-        this._sessionLang = lang;
-      } catch(e){ console.warn('Language detection failed, defaulting to English:', e); }
+        // Only cache if detection succeeded (not null)
+        if (lang) this._sessionLang = lang;
+      } catch(e){ console.warn('Language detection failed, Whisper will auto-detect:', e); }
     }
     const segs=[];
     for (let i=0;i<starts.length;i++){
@@ -1385,6 +1389,15 @@ async function init(){
     {id:'Xenova/whisper-small', name:'Accurate', desc:'Slower · ~250MB'},
     {id:'Xenova/whisper-medium', name:'Best', desc:'Slowest · ~400MB (q4)'},
   ];
+  // Refresh download status for all models (called when download completes)
+  async function refreshModelStatus(){
+    if (typeof MODELS === 'undefined') return;
+    for (const m of MODELS){
+      const cached = await isModelCached(m.id);
+      const el = document.getElementById('mstat-'+m.id.replace(/[^a-z0-9]/gi,''));
+      if (el) el.textContent = cached ? '✓ Downloaded' : 'Not downloaded';
+    }
+  }
   async function isModelCached(modelId){
     try{
       const c = await caches.open('meeting-transcriber-whisper');
