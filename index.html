@@ -1046,6 +1046,8 @@ const App = {
       if (!w){
         // Worker failed - warn user but don't block recording (P21)
         setTimeout(()=>{
+          // P63: don't prompt if the recording already ended (message would lie)
+          if (!App.meeting || App.meeting.recovering) return;
           if (confirm('Transcription model failed to load. Recording will continue, but transcription may fail.\n\nSwitch to Standard (base) model? (80MB, downloads faster)')){
             Engines.whisperModel = 'Xenova/whisper-base';
             // Save to settings
@@ -1514,12 +1516,14 @@ const App = {
     const cps = (await all('checkpoints')).filter(c=>c.status==='recording');
     if (!cps.length){ if (card) card.style.display='none'; return; }
     const cp = cps[0];
+    // P65: surface when more than one interrupted recording exists
+    const extra = cps.length > 1 ? ` (+${cps.length-1} more interrupted)` : '';
     const n = Object.keys(cp.segmentsByChunk||{}).length;
     const auds = (await all('audio')).filter(a=>a.meetingId===cp.meetingId)
       .sort((a,b)=>a.chunkIndex-b.chunkIndex);
     if (card){
       card.style.display='block';
-      $('recoveryInfo').textContent = `${cp.title} — ${n} transcribed chunk${n===1?'':'s'}, ${auds.length} audio chunk${auds.length===1?'':'s'}`;
+      $('recoveryInfo').textContent = `${cp.title} — ${n} transcribed chunk${n===1?'':'s'}, ${auds.length} audio chunk${auds.length===1?'':'s'}${extra}`;
       $('btnRecover').onclick = ()=>this.doRecover(cp.meetingId);
       $('btnAbandon').onclick = async ()=>{
         if (!confirm('Discard the interrupted recording? Saved audio will be deleted too.')) return;
@@ -1580,11 +1584,14 @@ const App = {
       const idx = Math.floor(absSec / CHUNK_SEC);
       const rec = await get('audio', [meetingId, idx]);
       if (!rec){ alert('The audio was deleted (retention policy). The transcript is kept.'); return; }
+      // P64: revoke the previous segment's object URL (was leaking one per click)
       if (this.audioEl) { this.audioEl.pause(); }
+      if (this._segUrl){ try{ URL.revokeObjectURL(this._segUrl); }catch(_){} this._segUrl = null; }
       const url = URL.createObjectURL(rec.blob);
+      this._segUrl = url;
       this.audioEl = new Audio(url);
       this.audioEl.currentTime = Math.max(0, absSec - idx*CHUNK_SEC);
-      this.audioEl.onended = ()=>URL.revokeObjectURL(url);
+      this.audioEl.onended = ()=>{ try{ URL.revokeObjectURL(url); }catch(_){} if (this._segUrl===url) this._segUrl = null; };
       this.audioEl.play().catch(()=>{});
     })();
   },
