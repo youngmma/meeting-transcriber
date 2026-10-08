@@ -1230,7 +1230,12 @@ function showScreen(id){
   // Recording-in-progress banner: visible on all screens except the rec screen itself
   try {
     const rb = document.getElementById('recBanner');
-    if (rb) rb.style.display = (App.meeting && id!=='scr-rec') ? '' : 'none';
+    if (rb) {
+      const show = App.meeting && id!=='scr-rec';
+      rb.style.display = show ? '' : 'none';
+      // Show "Processing" instead of "Recording" when stopping/saving
+      if (show) rb.textContent = (typeof AudioCap !== 'undefined' && AudioCap.stopping) ? '● Processing' : '● Recording';
+    }
   } catch(_){}
 }
 function hideBanner(id){ $(id).classList.remove('show'); }
