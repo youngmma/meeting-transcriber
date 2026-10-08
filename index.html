@@ -1599,8 +1599,10 @@ async function init(){
         del.onclick = async ()=>{
           if (!confirm(`Delete ${m.name} model files?`)) return;
           await deleteModelCache(m.id);
+          try { localStorage.removeItem('mt_dl_'+m.id.replace(/[^a-z0-9]/gi,'')); } catch(_){}
           renderModelList();
           updateStorageInfo();
+          try { if (typeof updateEngineBadge === 'function') await updateEngineBadge(); } catch(_){}
         };
         row.append(del);
       }
@@ -1694,8 +1696,18 @@ async function init(){
       : mid.includes('tiny') ? 'tiny' : mid.includes('base') ? 'base'
       : mid.includes('small') ? 'small' : mid.includes('medium') ? 'medium'
       : mid.includes('large') ? 'large' : '';
-    b.textContent = mshort ? backend + ' · ' + mshort : backend;
-    b.title = 'Backend: ' + backend + (mshort ? ', Model: ' + mshort : '');
+    // Check if model is downloaded
+    let downloaded = true;
+    try {
+      if (mid && typeof isModelCached === 'function'){
+        downloaded = await isModelCached(mid);
+      }
+    } catch(_){}
+    const dlTxt = downloaded ? '' : ' (not downloaded)';
+    b.textContent = mshort ? backend + ' · ' + mshort + dlTxt : backend;
+    b.title = 'Backend: ' + backend + (mshort ? ', Model: ' + mshort + (downloaded ? '' : ' (not downloaded)') : '');
+    if (!downloaded) b.style.borderColor = 'var(--warn, #b7791f)';
+    else b.style.borderColor = '';
   }
   updateEngineBadge();
   // Refresh badge when model changes
