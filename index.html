@@ -336,6 +336,8 @@ if ('serviceWorker' in navigator) {
     </div>
     <div class="card">
       <h2>Diagnostics</h2>
+      <div class="muted" id="webgpuStatus" style="margin-bottom:8px">Checking WebGPU…</div>
+      <div class="muted" id="deviceMemStatus" style="margin-bottom:8px"></div>
       <button class="btn btn-ghost btn-small" id="btnWipe" type="button">Delete all data</button>
       <div class="muted" style="margin-top:6px">Deletes all transcripts, recordings, and settings from this browser. This cannot be undone.</div>
     </div>
@@ -1485,6 +1487,20 @@ async function init(){
   window.updateStorageInfo = updateStorageInfo;
   $('btnRefreshStorage').onclick = updateStorageInfo;
   updateStorageInfo();
+  // WebGPU + device memory status
+  (async ()=>{
+    const wg = $('webgpuStatus'), dm = $('deviceMemStatus');
+    try {
+      if (navigator.gpu) {
+        const adapter = await navigator.gpu.requestAdapter();
+        if (wg) wg.textContent = adapter ? 'WebGPU: Available (faster transcription)' : 'WebGPU: No adapter (using WASM, slower)';
+      } else if (wg) wg.textContent = 'WebGPU: Not supported (using WASM, slower)';
+    } catch(e){ if (wg) wg.textContent = 'WebGPU: Check failed'; }
+    if (dm) {
+      const mem = navigator.deviceMemory;
+      dm.textContent = mem ? `Device memory: ~${mem}GB` : 'Device memory: unknown';
+    }
+  })();
   $('btnWipe').onclick = async ()=>{
     if (!confirm('Really delete all data? This cannot be undone.')) return;
     for (const s of ['transcripts','audio','checkpoints','settings']) await clearStore(s);
