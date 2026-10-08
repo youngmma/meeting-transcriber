@@ -1529,6 +1529,8 @@ async function init(){
       if (!cached){
         const dl = document.createElement('button');
         dl.className = 'btn btn-ghost btn-small'; dl.textContent = 'Download';
+        // Cancel flag
+        let cancelled = false;
         dl.onclick = async ()=>{
           const key = m.id.replace(/[^a-z0-9]/gi,'');
           const statEl = document.getElementById('mstat-'+key);
@@ -1536,8 +1538,17 @@ async function init(){
           if (statEl) statEl.textContent = 'Downloading…';
           if (progEl) progEl.style.display = 'block';
           const bar = progEl ? progEl.firstChild : null;
-          dl.disabled = true;
+          dl.textContent = 'Cancel';
+          dl.disabled = false;
+          cancelled = false;
+          // Change to cancel mode
+          const origOnclick = dl.onclick;
+          dl.onclick = ()=>{
+            cancelled = true;
+            if (statEl) statEl.textContent = 'Cancelling…';
+          };
           Engines.onProgress = (eng, file, loaded, total)=>{
+            if (cancelled) return;
             if (bar && total) bar.style.width = Math.round(loaded/total*100)+'%';
             if (statEl && total) statEl.textContent = `Downloading… ${Math.round(loaded/1048576)}MB / ${Math.round(total/1048576)}MB`;
           };
@@ -1551,12 +1562,18 @@ async function init(){
             Engines.resetWhisperWorker();
             if (statEl) statEl.textContent = '✓ Downloaded';
           }catch(e){
-            if (statEl) statEl.textContent = 'Download failed';
+            if (cancelled){
+              if (statEl) statEl.textContent = 'Download cancelled';
+              // Clean up partial download
+              try { await deleteModelCache(m.id); } catch(_){}
+            } else {
+              if (statEl) statEl.textContent = 'Download failed';
+            }
           }finally{
             Engines.onProgress = null;
             if (progEl) progEl.style.display = 'none';
-            renderModelList();
-            updateStorageInfo();
+            // Restore download button
+            setTimeout(()=>{ renderModelList(); updateStorageInfo(); }, cancelled ? 1000 : 0);
           }
         };
         row.append(dl);
