@@ -1452,9 +1452,9 @@ async function init(){
     await put('settings',{k:'audioPolicy', v:e.target.value});
   };
   const MODELS = [
-    {id:'Xenova/whisper-base', name:'Standard', desc:'Fast · ~80MB'},
-    {id:'Xenova/whisper-small', name:'Accurate', desc:'Slower · ~250MB'},
-    {id:'Xenova/whisper-medium', name:'Best', desc:'Slowest · ~400MB (q4)'},
+    {id:'Xenova/whisper-base', name:'Standard', tech:'base', size:'80MB', desc:'Fast'},
+    {id:'Xenova/whisper-small', name:'Accurate', tech:'small', size:'250MB', desc:'Slower'},
+    {id:'onnx-community/whisper-large-v3-turbo', name:'Best', tech:'turbo', size:'400MB', desc:'Slowest'},
   ];
   // Refresh download status for all models (called when download completes)
   async function refreshModelStatus(){
@@ -1497,7 +1497,7 @@ async function init(){
       radio.onchange = ()=>selectModel(m.id);
       const info = document.createElement('div');
       info.style.flex = '1';
-      info.innerHTML = `<div><b>${m.name}</b> <span class="muted">· ${m.desc}</span></div>
+      info.innerHTML = `<div><b>${m.name}</b> <span class="muted">(${m.tech}, ${m.size})</span> <span class="muted">· ${m.desc}</span></div>
         <div class="muted" style="font-size:12px" id="mstat-${m.id.replace(/[^a-z0-9]/gi,'')}">${cached ? '✓ Downloaded' : 'Not downloaded'}</div>
         <div style="display:none;height:4px;background:var(--border);border-radius:2px;margin-top:4px" id="mprog-${m.id.replace(/[^a-z0-9]/gi,'')}"><div style="height:100%;background:var(--accent);border-radius:2px;width:0%"></div></div>`;
       row.append(radio, info);
