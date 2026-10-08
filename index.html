@@ -384,7 +384,7 @@ function srtTimestamp(sec){ const ms=Math.round(sec*1000);
   return `${pad2(Math.floor(ms/3600000))}:${pad2(Math.floor(ms%3600000/60000))}:${pad2(Math.floor(ms%60000/1000))},${String(ms%1000).padStart(3,'0')}`; }
 function toSRT(segs){ return segs.map((g,i)=>`${i+1}\n${srtTimestamp(g.start)} --> ${srtTimestamp(g.end)}\n${g.text}\n`).join('\n'); }
 function normalizeText(t){ return String(t||'').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu,'').replace(/\s+/g,' ').trim(); }
-const BANNED = ['thank you','thanks for watching','bye','subtitles by','please subscribe',
+const BANNED = ['thank you','thank you for watching','thanks for watching','bye','subtitles by','please subscribe',
   'transcription by','copyright','감사합니다','字幕'];
 function filterHallucinations(segs){
   const b = new Set(BANNED.map(normalizeText));
@@ -395,11 +395,20 @@ function filterHallucinations(segs){
     // (broken timestamps like [18→0] corrupt SRT/timeline output)
     if (g.end != null && g.start != null && g.end <= g.start) continue;
     const n = normalizeText(g.text);
-    if (!n || b.has(n)) continue;                 // drop boilerplate phrases / empty segments
+    if (!n) continue;
+    // Cycle 1 fix: substring match for longer boilerplate phrases.
+    // Short phrases (e.g. '감사합니다') use exact match only to avoid
+    // filtering legitimate repetitions like "감사합니다 감사합니다".
+    let isBoilerplate = b.has(n);
+    if (!isBoilerplate){
+      for (const bp of b){ if (bp && bp.length >= 12 && n.includes(bp)) { isBoilerplate = true; break; } }
+    }
+    if (isBoilerplate) continue;                 // drop boilerplate phrases / empty segments
     // Round 2 (Task A): character-level loop detection — catches "-1.5.5.5…×200",
     // ">>"×667, "만"×80 style garbage that word-level gates miss.
     // If any single character makes up >60% of the text, it's a loop.
-    if (n.length >= 20){
+    // Cycle 1 fix: threshold 20→10 ("-1.5.5.5..." normalizes to 19 chars)
+    if (n.length >= 10){
       const freq = {};
       for (const ch of n) freq[ch] = (freq[ch]||0)+1;
       const maxFreq = Math.max(...Object.values(freq));
@@ -1041,14 +1050,16 @@ const App = {
             // Save to settings
             put('settings',{k:'whisperModel', v:'Xenova/whisper-base'}).catch(()=>{});
             Engines.resetWhisperWorker();
-            // Update badge immediately
+            // Update badge and model status note immediately
             try { if (typeof updateEngineBadge === 'function') updateEngineBadge(); } catch(_){}
+            try { if (typeof updateModelStatusNote === 'function') updateModelStatusNote(); } catch(_){}
             // Show feedback
             const tp = $('txProg');
             if (tp) tp.textContent = 'Switching to Standard (base) model… downloading…';
             Engines.ensureWhisperWorker().then(()=>{
               if (tp) tp.textContent = 'Standard (base) model ready.';
               try { if (typeof updateEngineBadge === 'function') updateEngineBadge(); } catch(_){}
+              try { if (typeof updateModelStatusNote === 'function') updateModelStatusNote(); } catch(_){}
             }).catch(()=>{
               if (tp) tp.textContent = 'Base model also failed. Transcription may not work.';
             });
@@ -1895,6 +1906,7 @@ async function init(){
           renderModelList();
           updateStorageInfo();
           try { if (typeof updateEngineBadge === 'function') await updateEngineBadge(); } catch(_){}
+          try { if (typeof updateModelStatusNote === 'function') updateModelStatusNote(); } catch(_){}
         };
         row.append(del);
       }
@@ -1913,6 +1925,7 @@ async function init(){
     Engines.whisperModel = modelId;
     await put('settings',{k:'whisperModel', v:modelId});
     try { if (typeof updateEngineBadge === 'function') updateEngineBadge(); } catch(_){}
+    try { if (typeof updateModelStatusNote === 'function') updateModelStatusNote(); } catch(_){}
     Engines.resetWhisperWorker();
     const cached = await isModelCached(modelId);
     if (Engines.whisperModel !== modelId) return; // superseded by a newer tap
