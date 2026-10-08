@@ -45,7 +45,12 @@ self.onmessage = async (e) => {
       try {
         if (typeof navigator !== 'undefined' && navigator.gpu) {
           const adapter = await navigator.gpu.requestAdapter();
-          if (adapter) { device = 'webgpu'; dtype = 'fp32'; }
+          // fp32 needs ~4x memory (small: 1GB). Use q8 on low-memory devices.
+          const devMem = (typeof navigator.deviceMemory === 'number') ? navigator.deviceMemory : 8;
+          if (adapter) {
+            device = 'webgpu';
+            dtype = devMem >= 8 ? 'fp32' : 'q8';
+          }
         }
       } catch(_) { device = 'wasm'; dtype = 'q8'; }
       try {
