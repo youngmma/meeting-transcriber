@@ -42,14 +42,20 @@ self.onmessage = async (e) => {
       // Prefer WebGPU when available (much faster on GPUs, incl. integrated);
       // fall back to WASM. WebGPU needs fp32 weights (q8 is WASM-only).
       let device = 'wasm', dtype = 'q8';
+      // For turbo, prefer q4 for smaller download (~400MB vs 656MB)
+      const isTurboModel = /whisper-large-v3-turbo/.test(modelId);
       try {
-        if (typeof navigator !== 'undefined' && navigator.gpu) {
+        if (typeof navigator !== 'undefined' && navigator.gpu && !isTurboModel) {
           const adapter = await navigator.gpu.requestAdapter();
           // fp32 needs ~4x memory (small: 1GB). Use q8 on low-memory devices.
           const devMem = (typeof navigator.deviceMemory === 'number') ? navigator.deviceMemory : 8;
-          if (adapter) {
+          if (adapter && !isTurboModel) {
             device = 'webgpu';
             dtype = devMem >= 8 ? 'fp32' : 'q8';
+          } else if (isTurboModel) {
+            // Turbo: use WASM q4 for smaller size
+            device = 'wasm';
+            dtype = 'q4';
           }
         }
       } catch(_) { device = 'wasm'; dtype = 'q8'; }
@@ -65,13 +71,14 @@ self.onmessage = async (e) => {
       } catch(e) {
         const isOOM = /bad_alloc|out of memory|memory/i.test(String((e && e.message) || e));
         const isSmallMed = /whisper-(small|medium)/.test(modelId);
+        const isTurbo = /whisper-large-v3-turbo/.test(modelId);
         // Chain: WebGPU fp32 → WebGPU fp16 → WASM q8 → WASM q4
         if (device === 'webgpu' && dtype === 'fp32' && isSmallMed) {
           self.postMessage({ type: 'modelProgress', file: 'fp32 failed, trying fp16', loaded: 0, total: 1 });
           try { asr = await tryLoad('webgpu', 'fp16'); device = 'webgpu'; dtype = 'fp16';
           } catch(e2) { asr = null; }
         }
-        if (!asr && isOOM && isSmallMed && dtype !== 'q4') {
+        if (!asr && isOOM && (isSmallMed || isTurbo) && dtype !== 'q4') {
           self.postMessage({ type: 'modelProgress', file: 'retrying with q4 (smaller)', loaded: 0, total: 1 });
           try { asr = await tryLoad(device === 'webgpu' ? 'webgpu' : 'wasm', 'q4'); dtype = 'q4';
             self.postMessage({ type: 'q4fallback' });
