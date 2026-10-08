@@ -1096,7 +1096,7 @@ const App = {
       startedAt:this.meeting.startedAt, title:this.meeting.title,
       segmentsByChunk:{}, status:'recording' });
     this.lastSound = Date.now(); this.silenceWarned = false; this._battWarned = false;
-    this._chunkTimes = []; this._consecFails = 0; // P15/P8: fresh per-meeting stats
+    this._chunkTimes = []; this._consecFails = 0; this._battMsg = null; this._battWarned = false; // P15/P8/P62: fresh per-meeting stats
     this._quotaWarned = false; this._lastQuotaCheck = 0; // Round 2 #6: fresh quota state
     try { $('storageFullWarn').classList.remove('show'); } catch(_){}
 
@@ -1235,9 +1235,13 @@ const App = {
     const winPct = (w && w.t>0) ? Math.round(w.d/w.t*100) : 0;
     const winTxt = (w && w.t>1) ? ` · part ${w.d}/${w.t} (${winPct}%)` : '';
     let txt;
+    // P59: during recovery say "Recovering", not "Recording"
+    const mode = this.meeting.recovering ? 'Recovering' : 'Recording';
     if (this.meeting.chunksTotal === 0){
       // Recording, no chunks finished yet (first 5 minutes)
-      txt = 'Recording… background transcription starts after 5 minutes';
+      txt = this.meeting.recovering
+        ? 'Recovering… preparing audio chunks'
+        : 'Recording… background transcription starts after 5 minutes';
     } else if (this.meeting.chunksDone >= this.meeting.chunksTotal){
       const n = this.meeting.chunksTotal;
       const failed = this.meeting.chunksFailed||0;
@@ -1246,17 +1250,19 @@ const App = {
         // P6: honest about failures
         txt = AudioCap.stopping
           ? `Transcription done with ${failed} failed (${cn})`
-          : `Recording… ${failed}/${n} chunks failed`;
+          : `${mode}… ${failed}/${n} chunks failed`;
       } else {
         txt = AudioCap.stopping
           ? `Transcription done (${cn})`
-          : 'Recording… transcription up to date';
+          : `${mode}… transcription up to date`;
       }
     } else {
       const eta = this._getETA();
       const etaTxt = eta ? ` · ${this._fmtETA(eta)}` : '';
-      txt = `Transcribing… ${this.meeting.chunksDone}/${this.meeting.chunksTotal} chunks${winTxt}${etaTxt}`;
+      txt = `${mode==='Recovering'?'Recovering':'Transcribing'}… ${this.meeting.chunksDone}/${this.meeting.chunksTotal} chunks${winTxt}${etaTxt}`;
     }
+    // P62: battery warning survives progress updates
+    if (this._battMsg) txt += '\n' + this._battMsg;
     const tp = $('txProg'); if (tp) tp.textContent = txt;
     const ri = $('recoveryInfo');
     if (ri && $('recoveryCard') && $('recoveryCard').style.display!=='none') ri.textContent = txt;
@@ -1279,13 +1285,13 @@ const App = {
     if (this.processing) return;
     this._requestWakeLock();
     // P23: Battery warning for long transcription sessions
+    // P62: stored on the instance so updateTxProg() doesn't overwrite it
     try {
       if (navigator.getBattery && !this._battWarned){
         const b = await navigator.getBattery();
         if (!b.charging && b.level <= 0.2){
           this._battWarned = true;
-          const tp = $('txProg');
-          if (tp) tp.textContent = '⚠️ Battery low (' + Math.round(b.level*100) + '%). Consider Standard (base) model to save power.';
+          this._battMsg = '⚠️ Battery low (' + Math.round(b.level*100) + '%) — Standard (base) model saves power.';
         }
       }
     } catch(_){}
@@ -1526,6 +1532,16 @@ const App = {
 
   /** Run recovery: re-queue untranscribed chunks, then transcribe */
   async doRecover(meetingId){
+    // P58: never clobber an active recording session — live audio chunks would
+    // be saved under the wrong meeting ID and the rest of the recording lost.
+    if (this.meeting && !this.meeting.recovering){
+      alert('A recording is in progress. Stop it before retrying transcription.');
+      return;
+    }
+    if (this.processing || (this.queue && this.queue.length)){
+      alert('Transcription is already running. Please wait until it finishes.');
+      return;
+    }
     const cp = await get('checkpoints', meetingId);
     if (!cp) return;
     const card = $('recoveryCard');
@@ -1535,7 +1551,7 @@ const App = {
     const doneIdx = new Set(Object.keys(cp.segmentsByChunk||{}).map(Number));
     for (const a of auds) if (!doneIdx.has(a.chunkIndex)) this.queue.push({meetingId, chunkIndex:a.chunkIndex});
     this.meeting = { id:meetingId, chunksDone:doneIdx.size, chunksTotal:auds.length, recovering:true };
-    this._chunkTimes = []; this._consecFails = 0; // Cycle 6: reset per-recovery stats
+    this._chunkTimes = []; this._consecFails = 0; this._battMsg = null; this._battWarned = false; // Cycle 6/P62: reset per-recovery stats
     if (card){
       $('btnRecover').disabled = true; $('btnAbandon').disabled = true;
       $('recoveryInfo').textContent = `${cp.title} — transcribing…`;
@@ -1949,6 +1965,12 @@ async function init(){
         del.className = 'btn btn-ghost btn-small'; del.textContent = 'Delete';
         del.style.marginLeft = '4px';
         del.onclick = async ()=>{
+          // P61: don't delete model files mid-transcription (badge would flip
+          // to "no model downloaded" and confuse the user).
+          if ((typeof App !== 'undefined') && (App.processing || (App.queue && App.queue.length))){
+            alert('Transcription is in progress — please wait until it finishes to delete models.');
+            return;
+          }
           if (!confirm(`Delete ${m.name} model files?`)) return;
           await deleteModelCache(m.id);
           try { localStorage.removeItem('mt_dl_'+m.id.replace(/[^a-z0-9]/gi,'')); } catch(_){}
@@ -1963,14 +1985,16 @@ async function init(){
     }
   }
   async function selectModel(modelId){
-    try { if (typeof updateInstrModelName === 'function') updateInstrModelName(); } catch(_){}
-    try { if (typeof updateModelStatusNote === 'function') updateModelStatusNote(); } catch(_){}
     // Round 2 (#12): never kill the transcription worker mid-session.
     if ((App.processing || (App.queue && App.queue.length)) && Engines.whisperModel !== modelId){
       alert('Transcription is in progress — please wait until it finishes to switch models.');
       renderModelList(); // restore radio to the active model
       return;
     }
+    // P60: only refresh model-name UI after the guard passes (blocked switch
+    // used to briefly show the new model name).
+    try { if (typeof updateInstrModelName === 'function') updateInstrModelName(); } catch(_){}
+    try { if (typeof updateModelStatusNote === 'function') updateModelStatusNote(); } catch(_){}
     // Round 2 (#1): supersede check — if another tap changed the model while
     // we were awaiting, bail out instead of initializing the wrong model.
     Engines.whisperModel = modelId;
