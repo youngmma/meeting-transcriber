@@ -53,37 +53,36 @@ self.onmessage = async (e) => {
           }
         }
       } catch(_) { device = 'wasm'; dtype = 'q8'; }
+      const progCb = (p) => self.postMessage({
+        type: 'modelProgress',
+        file: p.file || '', loaded: p.loaded || 0, total: p.total || 0,
+      });
+      const tryLoad = (dev, dt) => pipeline('automatic-speech-recognition', modelId, {
+        device: dev, dtype: dt, progress_callback: progCb,
+      });
       try {
-        asr = await pipeline('automatic-speech-recognition', modelId, {
-          device, dtype,
-          progress_callback: (p) => self.postMessage({
-            type: 'modelProgress',
-            file: p.file || '', loaded: p.loaded || 0, total: p.total || 0,
-          }),
-        });
+        asr = await tryLoad(device, dtype);
       } catch(e) {
-        // q8 OOM → try q4 (half size) for small/medium models
         const isOOM = /bad_alloc|out of memory|memory/i.test(String((e && e.message) || e));
-        if (isOOM && dtype === 'q8' && /whisper-(small|medium)/.test(modelId)) {
+        const isSmallMed = /whisper-(small|medium)/.test(modelId);
+        // Chain: WebGPU fp32 → WebGPU fp16 → WASM q8 → WASM q4
+        if (device === 'webgpu' && dtype === 'fp32' && isSmallMed) {
+          self.postMessage({ type: 'modelProgress', file: 'fp32 failed, trying fp16', loaded: 0, total: 1 });
+          try { asr = await tryLoad('webgpu', 'fp16'); device = 'webgpu'; dtype = 'fp16';
+          } catch(e2) { asr = null; }
+        }
+        if (!asr && isOOM && isSmallMed && dtype !== 'q4') {
           self.postMessage({ type: 'modelProgress', file: 'retrying with q4 (smaller)', loaded: 0, total: 1 });
-          asr = await pipeline('automatic-speech-recognition', modelId, {
-            device, dtype: 'q4',
-            progress_callback: (p) => self.postMessage({
-              type: 'modelProgress',
-              file: p.file || '', loaded: p.loaded || 0, total: p.total || 0,
-            }),
-          });
-          self.postMessage({ type: 'q4fallback' });
-        } else if (device !== 'wasm') {
-          // WebGPU failed (e.g. shader compile) → retry on WASM
-          asr = await pipeline('automatic-speech-recognition', modelId, {
-            device: 'wasm', dtype: 'q8',
-            progress_callback: (p) => self.postMessage({
-              type: 'modelProgress',
-              file: p.file || '', loaded: p.loaded || 0, total: p.total || 0,
-            }),
-          });
-        } else throw e;
+          try { asr = await tryLoad(device === 'webgpu' ? 'webgpu' : 'wasm', 'q4'); dtype = 'q4';
+            self.postMessage({ type: 'q4fallback' });
+          } catch(e3) { asr = null; }
+        }
+        if (!asr) {
+          if (device !== 'wasm') {
+            // Last resort: WASM q8
+            asr = await tryLoad('wasm', 'q8');
+          } else throw e;
+        }
       }
       self.postMessage({ type: 'ready', device });
     } else if (m.type === 'detect') {
