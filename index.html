@@ -1486,6 +1486,7 @@ async function init(){
   async function selectModel(modelId){
     Engines.whisperModel = modelId;
     await put('settings',{k:'whisperModel', v:modelId});
+    try { if (typeof updateEngineBadge === 'function') updateEngineBadge(); } catch(_){}
     Engines.resetWhisperWorker();
     const cached = await isModelCached(modelId);
     if (!cached){
@@ -1543,22 +1544,28 @@ async function init(){
   window.updateStorageInfo = updateStorageInfo;
   $('btnRefreshStorage').onclick = updateStorageInfo;
   updateStorageInfo();
-  // Engine badge on main header
+  // Engine badge on main header (backend + model)
   async function updateEngineBadge(){
     const b = $('engineBadge');
     if (!b) return;
+    let backend = 'WASM';
     try {
       if (navigator.gpu) {
         const adapter = await navigator.gpu.requestAdapter();
-        b.textContent = adapter ? 'WebGPU' : 'WASM';
-        b.title = adapter ? 'WebGPU available (faster)' : 'WebGPU no adapter (using WASM)';
-      } else {
-        b.textContent = 'WASM';
-        b.title = 'WebGPU not supported';
+        backend = adapter ? 'WebGPU' : 'WASM';
       }
-    } catch(_){ b.textContent = 'WASM'; }
+    } catch(_){}
+    // Model short name
+    const mid = (Engines && Engines.whisperModel) || '';
+    const mshort = mid.includes('tiny') ? 'tiny' : mid.includes('base') ? 'base'
+      : mid.includes('small') ? 'small' : mid.includes('medium') ? 'medium'
+      : mid.includes('large') ? 'large' : '';
+    b.textContent = mshort ? backend + ' · ' + mshort : backend;
+    b.title = 'Backend: ' + backend + (mshort ? ', Model: ' + mshort : '');
   }
   updateEngineBadge();
+  // Refresh badge when model changes
+  const _origSelectModel = typeof selectModel === 'function' ? selectModel : null;
   // WebGPU + device memory status
   (async ()=>{
     const wg = $('webgpuStatus'), dm = $('deviceMemStatus');
