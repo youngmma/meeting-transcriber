@@ -206,8 +206,8 @@ if ('serviceWorker' in navigator) {
   <button id="recBanner" class="btn btn-danger btn-small" style="display:none;margin-left:8px" type="button" title="Return to recording">● Recording</button>
   <div class="spacer"></div>
   <span id="engineBadge" class="muted" style="font-size:11px;padding:2px 8px;border:1px solid var(--border);border-radius:10px;margin-right:8px" title="Transcription engine">…</span>
-  <button class="icon-btn" id="navList" type="button">List</button>
-  <button class="icon-btn" id="navSettings" type="button">Settings</button>
+  <button class="icon-btn" id="navList" type="button" aria-label="Transcript list">List</button>
+  <button class="icon-btn" id="navSettings" type="button" aria-label="Settings">Settings</button>
 </header>
 <div class="banner info" id="updateBanner" style="margin:10px auto;max-width:900px;display:none">A new version is available. <button class="btn btn-small" id="btnUpdateApp" type="button" style="margin-left:8px">Update now</button></div>
 <main>
@@ -240,7 +240,7 @@ if ('serviceWorker' in navigator) {
       ⑤ Allow the mic.<br>
       <br>
       - This sharing only lets this browser hear the audio — other participants are not notified.<br>
-      - Audio never leaves this device. Transcription happens here too, using whisper-small.<br>
+      - Audio never leaves this device. Transcription happens here too, using <span id="instrModelName">the selected model</span>.<br>
       - Transcripts are stored in the browser. Company policy may wipe them, so download important meetings as files.<br>
       - Don't close this tab while recording.</div>
     </details>
@@ -256,7 +256,7 @@ if ('serviceWorker' in navigator) {
       <div class="timer" id="elapsed">00:00:00</div>
       <div class="meter-row" id="sysMeterRow"><span class="lab">Others’ audio</span><div class="meter sys"><div id="mSys"></div></div></div>
       <div class="meter-row"><span class="lab">My voice</span><div class="meter"><div id="mMic"></div></div></div>
-      <div class="muted" id="txProg" style="margin-top:8px">Recording…</div>
+      <div class="muted" id="txProg" style="margin-top:8px" aria-live="polite">Recording…</div>
       <div class="progress" id="saveProgWrap" style="display:none;margin-top:8px"><div id="saveProg"></div></div>
     </div>
     <button class="btn btn-danger" id="btnStop" type="button">Stop and save</button>
@@ -280,6 +280,7 @@ if ('serviceWorker' in navigator) {
       <div style="margin-top:8px">
         <button class="btn btn-ghost btn-small" id="btnDlTxt" type="button">Download txt</button>
         <button class="btn btn-ghost btn-small" id="btnDlSrt" type="button">Download srt</button>
+        <button class="btn btn-ghost btn-small" id="btnCopyTx" type="button">Copy</button>
         <button class="btn btn-ghost btn-small" id="btnBack" type="button">Back to list</button>
       </div>
     </div>
@@ -316,7 +317,7 @@ if ('serviceWorker' in navigator) {
     </div>
     <div class="card">
       <h2>Recording</h2>
-      <label class="lbl" for="silenceTimeout">Auto-stop on silence</label>
+      <label class="lbl" for="silenceTimeout">Silence reminder</label>
       <select id="silenceTimeout">
         <option value="5">After 5 minutes of silence</option>
         <option value="10" selected>After 10 minutes of silence</option>
@@ -1094,7 +1095,7 @@ const App = {
     await put('checkpoints', { meetingId:this.meeting.id, topic:this.meeting.topic,
       startedAt:this.meeting.startedAt, title:this.meeting.title,
       segmentsByChunk:{}, status:'recording' });
-    this.lastSound = Date.now(); this.silenceWarned = false;
+    this.lastSound = Date.now(); this.silenceWarned = false; this._battWarned = false;
     this._chunkTimes = []; this._consecFails = 0; // P15/P8: fresh per-meeting stats
     this._quotaWarned = false; this._lastQuotaCheck = 0; // Round 2 #6: fresh quota state
     try { $('storageFullWarn').classList.remove('show'); } catch(_){}
@@ -1277,6 +1278,17 @@ const App = {
   async pumpQueue(){
     if (this.processing) return;
     this._requestWakeLock();
+    // P23: Battery warning for long transcription sessions
+    try {
+      if (navigator.getBattery && !this._battWarned){
+        const b = await navigator.getBattery();
+        if (!b.charging && b.level <= 0.2){
+          this._battWarned = true;
+          const tp = $('txProg');
+          if (tp) tp.textContent = '⚠️ Battery low (' + Math.round(b.level*100) + '%). Consider Standard (base) model to save power.';
+        }
+      }
+    } catch(_){}
     this.processing = true;
     try {
       while (this.queue.length){
@@ -1599,8 +1611,30 @@ async function renderList(){
     (t.title||'').toLowerCase().includes(q) ||
     (t.segments||[]).some(s=>(s.text||'').toLowerCase().includes(q)));
   const box = $('meetList');
-  if (!items.length){ box.innerHTML = '<div class="muted">No transcripts yet.</div>'; return; }
   box.innerHTML = '';
+  // P19: Show in-progress transcription at top of list
+  try {
+    if (App.meeting && !AudioCap.stopping){
+      const m = App.meeting;
+      const pct = m.chunksTotal > 0 ? Math.round(m.chunksDone/m.chunksTotal*100) : 0;
+      const prog = document.createElement('div');
+      prog.className = 'meet-item';
+      prog.style.borderLeft = '4px solid var(--accent)';
+      const pinfo = document.createElement('div'); pinfo.className = 't';
+      const ptitle = document.createElement('div'); ptitle.className = 'title';
+      ptitle.textContent = '● Transcribing: ' + (m.topic || m.title || 'Meeting');
+      const psub = document.createElement('div'); psub.className = 'sub';
+      psub.textContent = `${m.chunksDone}/${m.chunksTotal} chunks · ${pct}%`;
+      pinfo.append(ptitle, psub);
+      prog.append(pinfo);
+      const back = document.createElement('button');
+      back.className = 'btn btn-small'; back.type = 'button'; back.textContent = 'View';
+      back.onclick = ()=>showScreen('scr-rec');
+      prog.append(back);
+      box.append(prog);
+    }
+  } catch(_){}
+  if (!items.length && !box.children.length){ box.innerHTML = '<div class="muted">No transcripts yet.</div>'; return; }
   for (const t of items){
     const row = document.createElement('div'); row.className='meet-item';
     const info = document.createElement('div'); info.className='t';
@@ -1741,6 +1775,16 @@ async function init(){
   // search
   $('searchInput').oninput = ()=>renderList();
   // downloads
+  $('btnCopyTx').onclick = async ()=>{
+    try {
+      const t = await get('transcripts', currentReadId);
+      if (!t) return;
+      const txt = typeof txtOf === 'function' ? txtOf(t) : t.segments.map(s=>s.text).join('\n');
+      await navigator.clipboard.writeText(txt);
+      const b = $('btnCopyTx'); const orig = b.textContent;
+      b.textContent = 'Copied!'; setTimeout(()=>{ b.textContent = orig; }, 1500);
+    } catch(_){ alert('Copy failed.'); }
+  };
   $('btnDlTxt').onclick = async ()=>{
     const t = await get('transcripts', currentReadId); if(!t) return;
     download(t.title+'.txt', txtOf(t), 'text/plain;charset=utf-8');
@@ -1919,6 +1963,8 @@ async function init(){
     }
   }
   async function selectModel(modelId){
+    try { if (typeof updateInstrModelName === 'function') updateInstrModelName(); } catch(_){}
+    try { if (typeof updateModelStatusNote === 'function') updateModelStatusNote(); } catch(_){}
     // Round 2 (#12): never kill the transcription worker mid-session.
     if ((App.processing || (App.queue && App.queue.length)) && Engines.whisperModel !== modelId){
       alert('Transcription is in progress — please wait until it finishes to switch models.');
@@ -1994,7 +2040,18 @@ async function init(){
     updateStorageInfo();
   }
   const wm = await get('settings','whisperModel');
-  Engines.whisperModel = (wm && wm.v) || 'Xenova/whisper-small';
+  if (wm && wm.v){
+    Engines.whisperModel = wm.v;
+  } else {
+    // P33: First run — suggest model based on device memory to avoid OOM
+    const mem = (typeof navigator.deviceMemory === 'number') ? navigator.deviceMemory : 8;
+    if (mem <= 4){
+      Engines.whisperModel = 'Xenova/whisper-base';
+      try { localStorage.setItem('mt_hw_note', '1'); } catch(_){}
+    } else {
+      Engines.whisperModel = 'Xenova/whisper-small';
+    }
+  }
   await renderModelList();
   const lg = await get('settings','transcribeLang');
   $('langSelect').value = lg ? lg.v : 'auto';
@@ -2080,6 +2137,19 @@ async function init(){
     else b.style.borderColor = '';
   }
   updateEngineBadge();
+  // Improvement: Instructions show actual selected model name
+  function updateInstrModelName(){
+    const el = $('instrModelName');
+    if (!el) return;
+    try {
+      const mid = (Engines && Engines.whisperModel) || '';
+      const label = mid.includes('turbo') ? 'whisper-large-v3-turbo'
+        : mid.includes('base') ? 'whisper-base'
+        : mid.includes('small') ? 'whisper-small' : 'the selected model';
+      el.textContent = label;
+    } catch(_){}
+  }
+  updateInstrModelName();
   // Model status below record button
   updateModelStatusNote = async function(){
     const el = $('modelStatusNote');
@@ -2094,6 +2164,19 @@ async function init(){
       if (cached){
         el.textContent = `✓ ${mshort} model ready`;
         el.style.color = 'var(--ok, #1e9e6a)';
+      } else if (mshort === 'base'){
+        try {
+          if (localStorage.getItem('mt_hw_note')){
+            el.textContent = `⚠️ base suggested for this device (low memory) — small may fail`;
+            el.style.color = 'var(--warn, #b7791f)';
+          } else {
+            el.textContent = `⚠️ ${mshort} not downloaded — will download on transcribe`;
+            el.style.color = 'var(--warn, #b7791f)';
+          }
+        } catch(_){
+          el.textContent = `⚠️ ${mshort} not downloaded — will download on transcribe`;
+          el.style.color = 'var(--warn, #b7791f)';
+        }
       } else {
         el.textContent = `⚠️ ${mshort} not downloaded — will download on transcribe`;
         el.style.color = 'var(--warn, #b7791f)';
