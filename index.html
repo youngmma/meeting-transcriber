@@ -225,6 +225,7 @@ if ('serviceWorker' in navigator) {
       <label class="lbl" for="topicInput">Topic (optional)</label>
       <input type="text" id="topicInput" placeholder="e.g., Weekly team meeting" maxlength="50" autocomplete="off">
       <button class="btn btn-primary" id="btnStart" type="button">Start recording</button>
+      <div class="muted" id="modelStatusNote" style="margin-top:8px;font-size:13px">Checking model…</div>
       <div class="muted" id="micOnlyNote" style="display:none;margin-top:8px">This device doesn't support screen sharing, so recording is mic-only. Meeting audio reaches the mic through the speaker — turn the volume up.</div>
       <div class="banner err" id="permErr"></div>
     </div>
@@ -873,10 +874,22 @@ const App = {
       if (!w){
         // Worker failed - warn user but don't block recording (P21)
         setTimeout(()=>{
-          if (confirm('Transcription model failed to load. Recording will continue, but transcription may fail.\n\nSwitch to Standard (base) model?')){
+          if (confirm('Transcription model failed to load. Recording will continue, but transcription may fail.\n\nSwitch to Standard (base) model? (80MB, downloads faster)')){
             Engines.whisperModel = 'Xenova/whisper-base';
+            // Save to settings
+            put('settings',{k:'whisperModel', v:'Xenova/whisper-base'}).catch(()=>{});
             Engines.resetWhisperWorker();
-            Engines.ensureWhisperWorker().catch(()=>{});
+            // Update badge immediately
+            try { if (typeof updateEngineBadge === 'function') updateEngineBadge(); } catch(_){}
+            // Show feedback
+            const tp = $('txProg');
+            if (tp) tp.textContent = 'Switching to Standard (base) model… downloading…';
+            Engines.ensureWhisperWorker().then(()=>{
+              if (tp) tp.textContent = 'Standard (base) model ready.';
+              try { if (typeof updateEngineBadge === 'function') updateEngineBadge(); } catch(_){}
+            }).catch(()=>{
+              if (tp) tp.textContent = 'Base model also failed. Transcription may not work.';
+            });
           }
         }, 2000);
       }
@@ -1714,6 +1727,27 @@ async function init(){
     else b.style.borderColor = '';
   }
   updateEngineBadge();
+  // Model status below record button
+  async function updateModelStatusNote(){
+    const el = $('modelStatusNote');
+    if (!el) return;
+    try {
+      const mid = (Engines && Engines.whisperModel) || '';
+      const mshort = mid.includes('turbo') ? 'turbo'
+        : mid.includes('base') ? 'base'
+        : mid.includes('small') ? 'small' : '';
+      if (!mshort){ el.textContent = ''; return; }
+      const cached = (typeof isModelCached === 'function') ? await isModelCached(mid) : false;
+      if (cached){
+        el.textContent = `✓ ${mshort} model ready`;
+        el.style.color = 'var(--ok, #1e9e6a)';
+      } else {
+        el.textContent = `⚠️ ${mshort} not downloaded — will download on transcribe`;
+        el.style.color = 'var(--warn, #b7791f)';
+      }
+    } catch(_){ el.textContent = ''; }
+  }
+  updateModelStatusNote();
   // Refresh badge when model changes
   const _origSelectModel = typeof selectModel === 'function' ? selectModel : null;
   // WebGPU + device memory status
