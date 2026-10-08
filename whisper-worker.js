@@ -91,6 +91,12 @@ self.onmessage = async (e) => {
       self.postMessage({ type: 'detected', id: m.id, language });
     } else if (m.type === 'transcribe') {
       if (!asr) throw new Error('model not initialized');
+      // Domain prompts: user's main contexts (work + church, EN + KO)
+      const EN_PROMPT = 'State Department meeting, passport modernization, AIFM, TDIS, OCCAM pilot. Church sermon, Bible study, prayer meeting, David, Moses, Abraham, Jesus Christ, God, Holy Spirit.';
+      const KO_PROMPT = '한국어 교회 설교, 성경 공부, 예배, 기도회, 순모임. 다윗, 모세, 아브라함, 예수님, 하나님, 성령님. 여호와, 이스라엘, 예루살렘.';
+      const prompt = m.language === 'ko' ? KO_PROMPT
+        : m.language === 'en' ? EN_PROMPT
+        : KO_PROMPT + ' ' + EN_PROMPT; // auto-detect: include both
       const out = await asr(m.pcm, {
         language: m.language || undefined,
         task: 'transcribe',
@@ -99,6 +105,7 @@ self.onmessage = async (e) => {
         stride_length_s: 0,
         // lower temperature = more deterministic, fewer hallucinations
         temperature: 0.2,
+        ...(prompt ? { initial_prompt: prompt } : {}),
         // anti-hallucination: ban any 3-gram appearing twice (blocks "two types of" infinite loops)
         no_repeat_ngram_size: 3,
         // 224 tokens is plenty for 30s of speech; blocks token/time waste from runaway loops
