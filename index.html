@@ -1098,11 +1098,13 @@ const App = {
       const el = $('sysAudioWarn');
       const elapsed = (Date.now()-AudioCap.recStart)/1000;
       if (elapsed>15 && !cap.hasSystemAudio && !cap.micOnly) el.classList.add('show'); else el.classList.remove('show');
-      // silence timeout → forgotten-recording reminder (configurable in Settings)
+      // silence timeout → non-blocking reminder (never auto-stop)
       const silMin = this.silenceTimeoutMin || 10;
       if (silMin > 0 && !this.silenceWarned && Date.now()-this.lastSound > silMin*60*1000){
         this.silenceWarned = true;
-        if (confirm(`No sound for ${silMin} minutes. Still recording. Stop?`)) this.stopRecording();
+        // Show warning banner instead of blocking confirm that stops recording
+        const tp = $('txProg');
+        if (tp) tp.textContent = `⚠️ No sound for ${silMin} min — still recording. Stop manually if done.`;
       }
       // auto-stop at 4 hours
       if (elapsed > 4*3600) this.stopRecording();
