@@ -44,21 +44,23 @@ self.onmessage = async (e) => {
       let device = 'wasm', dtype = 'q8';
       // For turbo, prefer q4 for smaller download (~400MB vs 656MB)
       const isTurboModel = /whisper-large-v3-turbo/.test(modelId);
-      try {
-        if (typeof navigator !== 'undefined' && navigator.gpu && !isTurboModel) {
-          const adapter = await navigator.gpu.requestAdapter();
-          // fp32 needs ~4x memory (small: 1GB). Use q8 on low-memory devices.
-          const devMem = (typeof navigator.deviceMemory === 'number') ? navigator.deviceMemory : 8;
-          if (adapter && !isTurboModel) {
-            device = 'webgpu';
-            dtype = devMem >= 8 ? 'fp32' : 'q8';
-          } else if (isTurboModel) {
-            // Turbo: use WASM q4 for smaller size
-            device = 'wasm';
-            dtype = 'q4';
+      if (isTurboModel) {
+        // Turbo: WASM q4 for smaller size (skip WebGPU probing entirely)
+        device = 'wasm';
+        dtype = 'q4';
+      } else {
+        try {
+          if (typeof navigator !== 'undefined' && navigator.gpu) {
+            const adapter = await navigator.gpu.requestAdapter();
+            // fp32 needs ~4x memory (small: 1GB). Use q8 on low-memory devices.
+            const devMem = (typeof navigator.deviceMemory === 'number') ? navigator.deviceMemory : 8;
+            if (adapter) {
+              device = 'webgpu';
+              dtype = devMem >= 8 ? 'fp32' : 'q8';
+            }
           }
-        }
-      } catch(_) { device = 'wasm'; dtype = 'q8'; }
+        } catch(_) { device = 'wasm'; dtype = 'q8'; }
+      }
       const progCb = (p) => self.postMessage({
         type: 'modelProgress',
         file: p.file || '', loaded: p.loaded || 0, total: p.total || 0,

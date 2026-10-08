@@ -251,6 +251,7 @@ if ('serviceWorker' in navigator) {
     <div class="rec-indicator"><span class="rec-dot" id="recDot"></span><span id="recLabel">Recording</span><span class="spacer" style="flex:1"></span><span id="recClock">00:00</span></div>
     <div class="banner warn" id="sysAudioWarn">Can't hear others. When sharing your screen, make sure <b>audio sharing</b> is on.</div>
     <div class="banner err" id="trackLostWarn">Audio input was lost. Please restart recording.</div>
+    <div class="banner err" id="storageFullWarn">Storage is full! New audio cannot be saved. Free space in Settings → Storage, or old recordings will be missing.</div>
     <div class="card">
       <div class="timer" id="elapsed">00:00:00</div>
       <div class="meter-row" id="sysMeterRow"><span class="lab">Others’ audio</span><div class="meter sys"><div id="mSys"></div></div></div>
@@ -342,7 +343,8 @@ if ('serviceWorker' in navigator) {
       <div class="muted" id="webgpuStatus" style="margin-bottom:8px">Checking WebGPU…</div>
       <div class="muted" id="deviceMemStatus" style="margin-bottom:8px"></div>
       <button class="btn btn-ghost btn-small" id="btnWipe" type="button">Delete all data</button>
-      <div class="muted" style="margin-top:6px">Deletes all transcripts, recordings, and settings from this browser. This cannot be undone.</div>
+      <button class="btn btn-ghost btn-small" id="btnBackup" type="button" style="margin-left:8px">Backup transcripts</button>
+      <div class="muted" style="margin-top:6px">Deletes all transcripts, recordings, and settings from this browser. This cannot be undone. Use "Backup transcripts" first to save a JSON copy.</div>
     </div>
   </section>
 </main>
@@ -355,6 +357,11 @@ if ('serviceWorker' in navigator) {
 <script type="module">
 'use strict';
 /* ============ utils (same behavior as TDD-verified logic) ============ */
+// Round 2 fix: these are assigned inside init() (which owns MODELS/isModelCached);
+// module-scope bindings let Engines/App call sites use typeof-guards correctly.
+let updateEngineBadge = null;
+let updateModelStatusNote = null;
+let refreshModelStatus = null;
 const pad2 = n => String(n).padStart(2, '0');
 const $ = id => document.getElementById(id);
 function formatTitle(date, topic) {
@@ -384,8 +391,34 @@ function filterHallucinations(segs){
   const out = [];
   let prevNorm = null, repeat = 0;
   for (const g of segs) {
+    // Round 2 (Task A): timestamp validation — drop chunks where end <= start
+    // (broken timestamps like [18→0] corrupt SRT/timeline output)
+    if (g.end != null && g.start != null && g.end <= g.start) continue;
     const n = normalizeText(g.text);
     if (!n || b.has(n)) continue;                 // drop boilerplate phrases / empty segments
+    // Round 2 (Task A): character-level loop detection — catches "-1.5.5.5…×200",
+    // ">>"×667, "만"×80 style garbage that word-level gates miss.
+    // If any single character makes up >60% of the text, it's a loop.
+    if (n.length >= 20){
+      const freq = {};
+      for (const ch of n) freq[ch] = (freq[ch]||0)+1;
+      const maxFreq = Math.max(...Object.values(freq));
+      if (maxFreq / n.length > 0.6) continue;
+      // Substring loop: check if text is mostly a repeated unit (e.g. "이제,이제,이제")
+      // by testing if removing the most common 1-4 char unit collapses >70%.
+      let loopFound = false;
+      for (let ulen=1; ulen<=4 && !loopFound; ulen++){
+        const units = {};
+        for (let i=0; i+ulen<=n.length; i+=ulen){
+          const u = n.slice(i, i+ulen);
+          units[u] = (units[u]||0)+1;
+        }
+        const top = Math.max(...Object.values(units));
+        const total = Math.ceil(n.length/ulen);
+        if (total >= 10 && top/total > 0.7) loopFound = true;
+      }
+      if (loopFound) continue;
+    }
     if (n === prevNorm) { repeat++; if (repeat >= 2) continue; } // collapse repeats of 3+
     else { prevNorm = n; repeat = 0; }
     // Gate: compression ratio — highly repetitive text is likely hallucination
@@ -661,11 +694,14 @@ const Engines = {
   },
 
   whisperModel:'Xenova/whisper-small',
-  _worker:null, _workerReady:null, _txSeq:0,
+  _worker:null, _workerReady:null, _txSeq:0, _workerGen:0,
 
   /** Prepare the whisper worker (incl. model load). Returns null on failure → main-thread fallback */
   ensureWhisperWorker(){
     if (this._workerReady) return this._workerReady;
+    // Round 2: generation counter — a superseded attempt (cancel/reset + retry)
+    // must never mutate shared state when its stale timeout fires.
+    const gen = ++this._workerGen;
     this._workerReady = (async ()=>{
       const model = this.whisperModel;
       let w;
@@ -698,9 +734,15 @@ const Engines = {
         if (wr && wr._activeDevice){ this._activeDevice = wr._activeDevice; this._activeDtype = wr._activeDtype; this._activeModel = wr._activeModel; }
         return wr; }
       catch(e){ console.warn('Worker init failed, falling back to main thread:', e);
-        try{ w.terminate(); }catch(_){} this._worker=null;
-        // Clear cache so next call retries instead of returning cached null
-        this._workerReady = null; this._workerFailed = true; return null; }
+        // Round 2: only mutate shared state if this attempt is still current.
+        // A stale 180s timeout from a cancelled/superseded attempt must not
+        // wipe the NEW worker's state or spuriously set _workerFailed.
+        if (this._workerGen === gen){
+          try{ w.terminate(); }catch(_){} this._worker=null;
+          // Clear cache so next call retries instead of returning cached null
+          this._workerReady = null; this._workerFailed = true;
+        }
+        return null; }
     })();
     return this._workerReady;
   },
@@ -712,6 +754,7 @@ const Engines = {
     this.whisperWorkerReady=false;
     this._activeDevice=null; this._activeDtype=null; this._activeModel=null;
     this._baseFallback=false; this._q4fallback=false; this._workerFailed=false;
+    this._workerGen++; // Round 2: invalidate any in-flight init attempt
   },
 
   /** Language detection from 30s of PCM → 'ko'/'en'. Falls back to 'en' */
@@ -740,19 +783,38 @@ const Engines = {
     const w = await this.ensureWhisperWorker();
     if (w){
       const id = ++this._txSeq;
+      // Round 2 (#3): capture worker identity — if resetWhisperWorker runs
+      // mid-flight, fail fast instead of burning the 10-min timeout.
+      const myWorker = w, myGen = this._workerGen;
       return new Promise((res, rej)=>{
+        let settled = false;
+        const done = (fn, v)=>{ if(!settled){ settled=true; clearTimeout(to); clearInterval(live); w.removeEventListener('message',h); fn(v); } };
         // 10-min timeout: if the worker was killed (memory pressure), fail fast
         // instead of hanging forever ("Saving…" stuck). Caller records the error.
-        const to = setTimeout(()=>{ w.removeEventListener('message',h);
-          rej(new Error('transcription timeout: worker unresponsive (10 min)')); }, 600000);
+        const to = setTimeout(()=>{
+          // Round 2 (#3): invalidate the corpse so the NEXT chunk re-inits
+          // a fresh worker instead of posting to the dead one (10 min each).
+          if (this._worker === myWorker && this._workerGen === myGen){ this._workerReady = null; }
+          done(rej, new Error('transcription timeout: worker unresponsive (10 min)'));
+        }, 600000);
+        // Liveness probe: every 2s, check the worker wasn't replaced/killed.
+        const live = setInterval(()=>{
+          if (this._worker !== myWorker || this._workerGen !== myGen){
+            done(rej, new Error('worker replaced mid-transcription'));
+          }
+        }, 2000);
         const h = (e)=>{
           const m = e.data||{};
           if (m.id!==id) return;
-          if (m.type==='done'){ clearTimeout(to); w.removeEventListener('message',h); res(m.chunks||[]); }
-          else if (m.type==='error'){ clearTimeout(to); w.removeEventListener('message',h); rej(new Error(m.message)); }
+          if (m.type==='done'){ done(res, m.chunks||[]); }
+          else if (m.type==='error'){
+            if (this._worker === myWorker && this._workerGen === myGen){ this._workerReady = null; }
+            done(rej, new Error(m.message));
+          }
         };
         w.addEventListener('message', h);
-        w.postMessage({ type:'transcribe', id, pcm, language }, [pcm.buffer]);
+        try { w.postMessage({ type:'transcribe', id, pcm, language }, [pcm.buffer]); }
+        catch(e){ done(rej, new Error('worker postMessage failed: '+String((e&&e.message)||e).slice(0,80))); }
       });
     }
     // fallback: main thread (older browsers)
@@ -869,7 +931,11 @@ const Engines = {
       }
       onWin && onWin(i+1, starts.length);
     }
-    return { segs: filterHallucinations(segs), engine:'whisper', language:lang };
+    const filtered = filterHallucinations(segs);
+    return { segs: filtered, engine:'whisper', language:lang,
+      // Round 2 (Task A #3): truncation signal — raw segment count before filtering,
+      // so callers can detect degenerate output (e.g. 300s audio → 18s transcript).
+      _rawCount: segs.length, _filteredCount: filtered.length };
   }
 };
 // E2E test hook (read-only exposure, no sensitive data)
@@ -917,12 +983,50 @@ const App = {
     } catch(_){}
   },
   _broadcast(type){ try{ this._bc && this._bc.postMessage({ type, from:this._tabId }); }catch(_){} },
+  // Round 2 (Hole 16): navigator.locks for atomic cross-tab mutual exclusion.
+  // The BroadcastChannel ping has a simultaneous-start race (both tabs ping
+  // before either broadcasts). An exclusive lock is atomic: only one tab wins.
+  _lockRelease: null,
+  async _acquireRecordingLock(){
+    if (!('locks' in navigator)) return true; // no API → fall back to BC confirm
+    return new Promise((resolve)=>{
+      let settled = false;
+      const done = (v)=>{ if(!settled){ settled=true; resolve(v); } };
+      const timer = setTimeout(()=>done(false), 1500);
+      try {
+        navigator.locks.request('mt-recording', { ifAvailable:true }, async (lock)=>{
+          clearTimeout(timer);
+          if (!lock){ done(false); return; }
+          done(true);
+          // Hold the lock until _releaseRecordingLock runs at stop
+          await new Promise(r=>{ this._lockRelease = r; });
+        }).catch(()=>{ clearTimeout(timer); done(false); });
+      } catch(_){ clearTimeout(timer); done(true); }
+    });
+  },
+  _releaseRecordingLock(){
+    try{ if (this._lockRelease){ const r=this._lockRelease; this._lockRelease=null; r(); } }catch(_){}
+  },
 
   async startRecording(){
     hideBanner('permErr');
+    // P1: block starting a new recording while previous session is still saving
+    if (this.meeting){
+      alert('Please wait — the previous recording is still saving. Try again in a moment.');
+      return;
+    }
     if (!this._bc) this._initBroadcast();
+    // Round 2: atomic lock check (fixes simultaneous-start race in BC ping)
+    const lockOk = await this._acquireRecordingLock();
+    if (!lockOk && !this._otherTabRecording){
+      // Lock busy but BC didn't know — treat as another tab recording
+      this._otherTabRecording = true;
+    }
     if (this._otherTabRecording){
-      if (!confirm('Another tab appears to be recording. Starting here may cause conflicts.\n\nStart anyway?')) return;
+      if (!confirm('Another tab appears to be recording. Starting here may cause conflicts.\n\nStart anyway?')){
+        this._releaseRecordingLock();
+        return;
+      }
     }
     // Pre-download whisper model NOW (while user handles permission popups),
     // so background transcription of chunk 1 starts immediately at 5:00
@@ -959,6 +1063,7 @@ const App = {
     try { cap = await AudioCap.start(); }
     catch(e){
       AudioCap.abort(); // clean up tracks when only screen sharing succeeded
+      this._releaseRecordingLock(); // Round 2: don't hold the cross-tab lock on failure
       const el = $('permErr');
       if (e && e.name==='NotAllowedError'){
         el.textContent = 'Permission denied. You may have cancelled screen sharing or blocked the mic. Click the lock icon in the address bar → Site settings → Allow, then try again.';
@@ -980,6 +1085,8 @@ const App = {
       segmentsByChunk:{}, status:'recording' });
     this.lastSound = Date.now(); this.silenceWarned = false;
     this._chunkTimes = []; this._consecFails = 0; // P15/P8: fresh per-meeting stats
+    this._quotaWarned = false; this._lastQuotaCheck = 0; // Round 2 #6: fresh quota state
+    try { $('storageFullWarn').classList.remove('show'); } catch(_){}
 
     // 3) wire callbacks
     AudioCap.onChunk = (blob, idx)=>this.onAudioChunk(blob, idx);
@@ -1033,16 +1140,59 @@ const App = {
   async onAudioChunk(blob, idx){
     if (!this.meeting) return;
     const m = this.meeting;
-    m.chunksTotal++;
     const settings = await get('settings','audioPolicy');
     const policy = settings ? settings.v : '3days';
     const recordedAt = new Date();
-    await put('audio', { meetingId:m.id, chunkIndex:idx, blob,
-      recordedAt:recordedAt.getTime(),
-      expiresAt:(()=>{const e=audioExpiryDate(recordedAt,policy);return e?e.getTime():null;})() });
+    // Round 2 (#6 HIGH): quota errors must not silently drop chunks.
+    try {
+      await put('audio', { meetingId:m.id, chunkIndex:idx, blob,
+        recordedAt:recordedAt.getTime(),
+        expiresAt:(()=>{const e=audioExpiryDate(recordedAt,policy);return e?e.getTime():null;})() });
+    } catch(e){
+      const isQuota = /quota/i.test(String((e&&e.message)||e));
+      // Don't count a chunk we couldn't save — honest progress, no stuck UI.
+      m.chunksFailed = (m.chunksFailed||0) + 1;
+      try {
+        const cp = await get('checkpoints', m.id);
+        if (cp){
+          const errs = cp.transcribeErrors || {};
+          errs[idx] = isQuota ? 'Storage full — audio chunk could not be saved' : String((e&&e.message)||e).slice(0,200);
+          await put('checkpoints', { ...cp, transcribeErrors: errs });
+        }
+      } catch(_){}
+      if (isQuota && !this._quotaWarned){
+        this._quotaWarned = true;
+        const warn = $('storageFullWarn');
+        if (warn){ warn.classList.add('show'); }
+        else { alert('Storage is full! Recording continues, but new audio cannot be saved. Free space or delete old recordings in Settings → Storage.'); }
+      }
+      this.updateTxProg();
+      return;
+    }
+    m.chunksTotal++;
     this.queue.push({ meetingId:m.id, chunkIndex:idx });
     this.updateTxProg();
+    // Round 2 (#6): periodic quota check during recording (warn before we hit the wall)
+    this._checkQuotaDuringRecording();
     this.pumpQueue();
+  },
+
+  // Round 2 (#6): lightweight quota sampling during recording — warn at 90%
+  _lastQuotaCheck: 0,
+  async _checkQuotaDuringRecording(){
+    try {
+      const now = Date.now();
+      if (now - this._lastQuotaCheck < 60000) return; // at most once per minute
+      this._lastQuotaCheck = now;
+      if (navigator.storage && navigator.storage.estimate){
+        const est = await navigator.storage.estimate();
+        if (est.quota && est.usage / est.quota > 0.9 && !this._quotaWarned){
+          this._quotaWarned = true;
+          const warn = $('storageFullWarn');
+          if (warn) warn.classList.add('show');
+        }
+      }
+    } catch(_){}
   },
 
   // P4: Wake Lock to prevent screen sleep during transcription
@@ -1149,9 +1299,21 @@ const App = {
       const pcm = await Engines.resample16k(rec.blob);
       const offset = chunkIndex * CHUNK_SEC;
       this.txWin = null;
-      const { segs, engine } = await Engines.transcribeChunk(pcm, (d,t)=>{
+      const { segs, engine, _rawCount, _filteredCount } = await Engines.transcribeChunk(pcm, (d,t)=>{
         this.txWin = { d, t }; this.updateTxProg();
       });
+      // Round 2 (Task A #3): truncation guard — if the model emitted segments but
+      // ALL were filtered as garbage, flag it (don't silently record an empty chunk).
+      if (_rawCount > 0 && (!_filteredCount || _filteredCount === 0) && engine !== 'none'){
+        try {
+          const cpT = await get('checkpoints', meetingId);
+          if (cpT){
+            const errs = cpT.transcribeErrors || {};
+            errs[chunkIndex] = 'Output filtered as hallucination/loop — audio saved, retry may help';
+            await put('checkpoints', { ...cpT, transcribeErrors: errs });
+          }
+        } catch(_){}
+      }
       this.txWin = null;
       // convert to absolute times + speaker attribution (using session energy)
       const cp = await get('checkpoints', meetingId);
@@ -1243,6 +1405,7 @@ const App = {
       $('btnStop').disabled = false; $('btnStop').textContent = 'Stop and save';
       const spw2 = $('saveProgWrap'); if (spw2) spw2.style.display='none';
       this.meeting = null;
+      this._releaseRecordingLock(); // Round 2: release cross-tab exclusive lock
       this._broadcast('recording-stopped');
       window.onbeforeunload = null;
       try { document.getElementById('recBanner').style.display='none'; } catch(_){}
@@ -1462,6 +1625,24 @@ async function renderList(){
         renderList();
       };
       row.append(info, open, retryBtn, delBtn);
+      // P16: export audio fallback — let user take the audio elsewhere if transcription keeps failing
+      const audioBtn = document.createElement('button'); audioBtn.className='btn btn-ghost btn-small';
+      audioBtn.type='button'; audioBtn.textContent='Audio';
+      audioBtn.style.marginLeft = '4px';
+      audioBtn.title = 'Download the recording as audio (use another tool if transcription fails)';
+      audioBtn.onclick = async ()=>{
+        try {
+          const auds = (await all('audio')).filter(a=>a.meetingId===t.id).sort((a,b)=>a.chunkIndex-b.chunkIndex);
+          if (!auds.length){ alert('No audio saved for this meeting (retention policy may have deleted it).'); return; }
+          const blob = new Blob(auds.map(a=>a.blob), { type: auds[0].blob.type || 'audio/webm' });
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = (t.title||'meeting').replace(/[^\w\- ]+/g,'').trim().slice(0,40) + '.webm';
+          document.body.appendChild(a); a.click();
+          setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 4000);
+        } catch(e){ alert('Could not export audio: ' + String((e&&e.message)||e).slice(0,100)); }
+      };
+      row.append(audioBtn);
     } else {
       row.append(info, open, delBtn);
     }
@@ -1570,12 +1751,21 @@ async function init(){
     {id:'onnx-community/whisper-large-v3-turbo', name:'Best', tech:'turbo', size:'656MB', desc:'Slowest'},
   ];
   // Refresh download status for all models (called when download completes)
-  async function refreshModelStatus(){
+  refreshModelStatus = async function(){
     if (typeof MODELS === 'undefined') return;
     for (const m of MODELS){
       const cached = await isModelCached(m.id);
       const el = document.getElementById('mstat-'+m.id.replace(/[^a-z0-9]/gi,''));
-      if (el) el.textContent = cached ? '✓ Downloaded' : 'Not downloaded';
+      if (!el) continue;
+      // Round 2 (#4): honor the incomplete-download marker — don't let a
+      // partial cache masquerade as "✓ Downloaded".
+      let incomplete = false;
+      try {
+        const key = m.id.replace(/[^a-z0-9]/gi,'');
+        incomplete = localStorage.getItem('mt_dl_'+key) === 'downloading' && cached;
+      } catch(_){}
+      el.textContent = incomplete ? '⚠️ Incomplete download — please re-download'
+        : cached ? '✓ Downloaded' : 'Not downloaded';
     }
   }
   async function isModelCached(modelId){
@@ -1628,6 +1818,12 @@ async function init(){
         const dl = document.createElement('button');
         dl.className = 'btn btn-ghost btn-small'; dl.textContent = 'Download';
         dl.onclick = async ()=>{
+          // Round 2 (#12): downloading spins up a worker via resetWhisperWorker —
+          // never do that while a transcription is running.
+          if (App.processing || (App.queue && App.queue.length)){
+            alert('Transcription is in progress — please wait until it finishes to download models.');
+            return;
+          }
           const key = m.id.replace(/[^a-z0-9]/gi,'');
           // Mark as downloading (to detect incomplete on refresh)
           try { localStorage.setItem('mt_dl_'+key, 'downloading'); } catch(_){}
@@ -1704,11 +1900,20 @@ async function init(){
     }
   }
   async function selectModel(modelId){
+    // Round 2 (#12): never kill the transcription worker mid-session.
+    if ((App.processing || (App.queue && App.queue.length)) && Engines.whisperModel !== modelId){
+      alert('Transcription is in progress — please wait until it finishes to switch models.');
+      renderModelList(); // restore radio to the active model
+      return;
+    }
+    // Round 2 (#1): supersede check — if another tap changed the model while
+    // we were awaiting, bail out instead of initializing the wrong model.
     Engines.whisperModel = modelId;
     await put('settings',{k:'whisperModel', v:modelId});
     try { if (typeof updateEngineBadge === 'function') updateEngineBadge(); } catch(_){}
     Engines.resetWhisperWorker();
     const cached = await isModelCached(modelId);
+    if (Engines.whisperModel !== modelId) return; // superseded by a newer tap
     if (!cached){
       // Download now with progress
       const key = modelId.replace(/[^a-z0-9]/gi,'');
@@ -1717,22 +1922,49 @@ async function init(){
       if (statEl) statEl.textContent = 'Downloading…';
       if (progEl) progEl.style.display = 'block';
       const bar = progEl ? progEl.firstChild : null;
-      Engines.onProgress = (eng, file, loaded, total)=>{
+      // Round 2 (#1): own the progress slot — only clear it if still ours,
+      // so a stale tap can't freeze a surviving download's progress UI.
+      const myProgress = (eng, file, loaded, total)=>{
         if (bar && total) bar.style.width = Math.round(loaded/total*100)+'%';
         if (statEl && total) statEl.textContent = `Downloading… ${Math.round(loaded/1048576)}MB / ${Math.round(total/1048576)}MB`;
       };
+      Engines.onProgress = myProgress;
       try{
         // Mark as downloading (incomplete-download detection on refresh)
         try { localStorage.setItem('mt_dl_'+key, 'downloading'); } catch(_){}
-        const w = await Engines.ensureWhisperWorker();
+        // Round 2 (Hole 5A): Cancel button for selectModel auto-download
+        let cancelled = false;
+        let cancelReject = null;
+        const cancelPromise = new Promise((_, rej)=>{ cancelReject = rej; });
+        const cancelBtn = document.createElement('button');
+        cancelBtn.className = 'btn btn-ghost btn-small'; cancelBtn.textContent = 'Cancel';
+        cancelBtn.style.marginLeft = '4px';
+        cancelBtn.onclick = ()=>{
+          cancelled = true;
+          if (statEl) statEl.textContent = 'Cancelling…';
+          try{ Engines._worker && Engines._worker.terminate(); }catch(_){}
+          Engines._worker = null; Engines._workerReady = null; Engines.whisperWorkerReady = false;
+          if (cancelReject) cancelReject(new Error('Download cancelled by user'));
+        };
+        // insert cancel button into the model row (found via stat element)
+        const rowEl = statEl ? statEl.closest('div').parentElement : null;
+        if (rowEl) rowEl.append(cancelBtn);
+        else { const box = $('modelList'); if (box) box.append(cancelBtn); }
+        const w = await Promise.race([Engines.ensureWhisperWorker(), cancelPromise]);
+        if (cancelled) throw new Error('Download cancelled by user');
         if (!w) throw new Error('Model failed to load');
         try { localStorage.setItem('mt_dl_'+key, 'done'); } catch(_){}
         if (statEl) statEl.textContent = '✓ Downloaded';
       }catch(e){
         try { localStorage.removeItem('mt_dl_'+key); } catch(_){}
-        if (statEl) statEl.textContent = 'Download failed: '+String(e.message||e).slice(0,60);
+        if (String((e&&e.message)||e).includes('cancelled')){
+          if (statEl) statEl.textContent = 'Download cancelled';
+          try { await deleteModelCache(modelId); } catch(_){}
+        } else {
+          if (statEl) statEl.textContent = 'Download failed: '+String(e.message||e).slice(0,60);
+        }
       }finally{
-        Engines.onProgress = null;
+        if (Engines.onProgress === myProgress) Engines.onProgress = null;
         if (progEl) progEl.style.display = 'none';
         try { if (typeof updateModelStatusNote === 'function') updateModelStatusNote(); } catch(_){}
         renderModelList();
@@ -1780,7 +2012,7 @@ async function init(){
   $('btnRefreshStorage').onclick = updateStorageInfo;
   updateStorageInfo();
   // Engine badge on main header (backend + model)
-  async function updateEngineBadge(){
+  updateEngineBadge = async function(){
     const b = $('engineBadge');
     if (!b) return;
     // Prefer the ACTUAL backend/model reported by the worker (it may differ from
@@ -1829,7 +2061,7 @@ async function init(){
   }
   updateEngineBadge();
   // Model status below record button
-  async function updateModelStatusNote(){
+  updateModelStatusNote = async function(){
     const el = $('modelStatusNote');
     if (!el) return;
     try {
@@ -1891,6 +2123,15 @@ async function init(){
     for (const s of ['transcripts','audio','checkpoints']) await clearStore(s);
     alert('Deleted.'); showScreen('scr-list'); renderList();
   };
+  // P29: backup all transcripts as JSON
+  $('btnBackup').onclick = async ()=>{
+    try {
+      const items = await all('transcripts');
+      if (!items.length){ alert('No transcripts to back up.'); return; }
+      const data = JSON.stringify({ app:'meeting-transcriber', version:1, exportedAt:new Date().toISOString(), transcripts:items }, null, 1);
+      download('meeting-transcriber-backup-' + new Date().toISOString().slice(0,10) + '.json', data, 'application/json');
+    } catch(e){ alert('Backup failed: ' + String((e&&e.message)||e).slice(0,100)); }
+  };
 
   await App.sweepRetention();
   await Engines.checkCache(); // whisper cache status
@@ -1900,6 +2141,28 @@ async function init(){
     try{ localStorage.removeItem('mt_model_parakeet'); }catch(_){}
   })();
   await App.checkRecovery();
+  // P18: sleep/hidden-tab detection — if hidden >60s during active session, offer resume check
+  (()=>{
+    let hiddenAt = 0;
+    document.addEventListener('visibilitychange', ()=>{
+      if (document.hidden){
+        hiddenAt = Date.now();
+      } else if (hiddenAt && Date.now() - hiddenAt > 60000){
+        hiddenAt = 0;
+        // Was something active? Check for in-progress meeting or non-empty queue
+        const active = (App.meeting) || (App.queue && App.queue.length);
+        if (active){
+          setTimeout(()=>{
+            if (confirm('This tab was hidden for a while (possible sleep). Transcription may have stalled.\n\nCheck the list and use "Retry" on any incomplete meeting?')){
+              showScreen('scr-list'); renderList();
+            }
+          }, 500);
+        }
+      } else {
+        hiddenAt = 0;
+      }
+    });
+  })();
   // request storage persistence (prevent eviction)
   if (navigator.storage && navigator.storage.persist){
     try{ await navigator.storage.persist(); }catch(_){}
