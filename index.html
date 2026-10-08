@@ -1523,6 +1523,7 @@ const App = {
     const doneIdx = new Set(Object.keys(cp.segmentsByChunk||{}).map(Number));
     for (const a of auds) if (!doneIdx.has(a.chunkIndex)) this.queue.push({meetingId, chunkIndex:a.chunkIndex});
     this.meeting = { id:meetingId, chunksDone:doneIdx.size, chunksTotal:auds.length, recovering:true };
+    this._chunkTimes = []; this._consecFails = 0; // Cycle 6: reset per-recovery stats
     if (card){
       $('btnRecover').disabled = true; $('btnAbandon').disabled = true;
       $('recoveryInfo').textContent = `${cp.title} — transcribing…`;
