@@ -1621,8 +1621,12 @@ async function renderList(){
       await del('checkpoints', t.id);
       renderList();
     };
-    // P11: Retry button for partial failures (has note with error)
-    const hasFailed = t.note && (t.note.includes('failed') || t.note.includes('Failed'));
+    // P11: Retry button for partial failures (has note indicating an error).
+    // Cycle 3 fix: was checking for 'failed' substring only, missing errors like
+    // 'Storage full — audio chunk could not be saved'. Exclude 'silent' notes
+    // (nothing to retry when audio was silent).
+    const hasFailed = t.note && t.note.trim().length > 0
+      && !/silent/i.test(t.note);
     // P7: Retry button for failed transcriptions (0 segments)
     if ((t.segCount||0) === 0 || hasFailed){
       const retryBtn = document.createElement('button'); retryBtn.className='btn btn-small';
