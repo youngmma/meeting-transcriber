@@ -205,6 +205,7 @@ if ('serviceWorker' in navigator) {
   <h1 id="brandHome" style="cursor:pointer" title="Home">Meeting Transcriber</h1>
   <button id="recBanner" class="btn btn-danger btn-small" style="display:none;margin-left:8px" type="button" title="Return to recording">● Recording</button>
   <div class="spacer"></div>
+  <span id="engineBadge" class="muted" style="font-size:11px;padding:2px 8px;border:1px solid var(--border);border-radius:10px;margin-right:8px" title="Transcription engine">…</span>
   <button class="icon-btn" id="navList" type="button">List</button>
   <button class="icon-btn" id="navSettings" type="button">Settings</button>
 </header>
@@ -1434,7 +1435,41 @@ async function init(){
         <div class="muted" style="font-size:12px" id="mstat-${m.id.replace(/[^a-z0-9]/gi,'')}">${cached ? '✓ Downloaded' : 'Not downloaded'}</div>
         <div style="display:none;height:4px;background:var(--border);border-radius:2px;margin-top:4px" id="mprog-${m.id.replace(/[^a-z0-9]/gi,'')}"><div style="height:100%;background:var(--accent);border-radius:2px;width:0%"></div></div>`;
       row.append(radio, info);
-      if (cached && m.id !== current){
+      if (!cached){
+        const dl = document.createElement('button');
+        dl.className = 'btn btn-ghost btn-small'; dl.textContent = 'Download';
+        dl.onclick = async ()=>{
+          const key = m.id.replace(/[^a-z0-9]/gi,'');
+          const statEl = document.getElementById('mstat-'+key);
+          const progEl = document.getElementById('mprog-'+key);
+          if (statEl) statEl.textContent = 'Downloading…';
+          if (progEl) progEl.style.display = 'block';
+          const bar = progEl ? progEl.firstChild : null;
+          dl.disabled = true;
+          Engines.onProgress = (eng, file, loaded, total)=>{
+            if (bar && total) bar.style.width = Math.round(loaded/total*100)+'%';
+            if (statEl && total) statEl.textContent = `Downloading… ${Math.round(loaded/1048576)}MB / ${Math.round(total/1048576)}MB`;
+          };
+          try{
+            // Temporarily set model to download it
+            const prevModel = Engines.whisperModel;
+            Engines.whisperModel = m.id;
+            Engines.resetWhisperWorker();
+            await Engines.ensureWhisperWorker();
+            Engines.whisperModel = prevModel;
+            Engines.resetWhisperWorker();
+            if (statEl) statEl.textContent = '✓ Downloaded';
+          }catch(e){
+            if (statEl) statEl.textContent = 'Download failed';
+          }finally{
+            Engines.onProgress = null;
+            if (progEl) progEl.style.display = 'none';
+            renderModelList();
+            updateStorageInfo();
+          }
+        };
+        row.append(dl);
+      } else if (m.id !== current){
         const del = document.createElement('button');
         del.className = 'btn btn-ghost btn-small'; del.textContent = 'Delete';
         del.onclick = async ()=>{
@@ -1508,6 +1543,22 @@ async function init(){
   window.updateStorageInfo = updateStorageInfo;
   $('btnRefreshStorage').onclick = updateStorageInfo;
   updateStorageInfo();
+  // Engine badge on main header
+  async function updateEngineBadge(){
+    const b = $('engineBadge');
+    if (!b) return;
+    try {
+      if (navigator.gpu) {
+        const adapter = await navigator.gpu.requestAdapter();
+        b.textContent = adapter ? 'WebGPU' : 'WASM';
+        b.title = adapter ? 'WebGPU available (faster)' : 'WebGPU no adapter (using WASM)';
+      } else {
+        b.textContent = 'WASM';
+        b.title = 'WebGPU not supported';
+      }
+    } catch(_){ b.textContent = 'WASM'; }
+  }
+  updateEngineBadge();
   // WebGPU + device memory status
   (async ()=>{
     const wg = $('webgpuStatus'), dm = $('deviceMemStatus');
@@ -1523,9 +1574,9 @@ async function init(){
     }
   })();
   $('btnWipe').onclick = async ()=>{
-    if (!confirm('Really delete all data? This cannot be undone.')) return;
-    for (const s of ['transcripts','audio','checkpoints','settings']) await clearStore(s);
-    alert('Deleted.'); showScreen('scr-start');
+    if (!confirm('Delete all transcripts and recordings? Models will be kept. This cannot be undone.')) return;
+    for (const s of ['transcripts','audio','checkpoints']) await clearStore(s);
+    alert('Deleted.'); showScreen('scr-list'); renderList();
   };
 
   await App.sweepRetention();
