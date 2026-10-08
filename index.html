@@ -1513,7 +1513,17 @@ async function init(){
     const current = Engines.whisperModel;
     box.innerHTML = '';
     for (const m of MODELS){
-      const cached = await isModelCached(m.id);
+      const key = m.id.replace(/[^a-z0-9]/gi,'');
+      let cached = await isModelCached(m.id);
+      // Check for incomplete download (was downloading but page refreshed)
+      let incomplete = false;
+      try {
+        const dlState = localStorage.getItem('mt_dl_'+key);
+        if (dlState === 'downloading' && cached){
+          incomplete = true;
+          cached = false; // treat as not downloaded
+        }
+      } catch(_){}
       const row = document.createElement('div');
       row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border)';
       const radio = document.createElement('input');
@@ -1523,7 +1533,7 @@ async function init(){
       const info = document.createElement('div');
       info.style.flex = '1';
       info.innerHTML = `<div><b>${m.name}</b> <span class="muted">(${m.tech}, ${m.size})</span> <span class="muted">· ${m.desc}</span></div>
-        <div class="muted" style="font-size:12px" id="mstat-${m.id.replace(/[^a-z0-9]/gi,'')}">${cached ? '✓ Downloaded' : 'Not downloaded'}</div>
+        <div class="muted" style="font-size:12px" id="mstat-${m.id.replace(/[^a-z0-9]/gi,'')}">${incomplete ? '⚠️ Incomplete download — please re-download' : (cached ? '✓ Downloaded' : 'Not downloaded')}</div>
         <div style="display:none;height:4px;background:var(--border);border-radius:2px;margin-top:4px" id="mprog-${m.id.replace(/[^a-z0-9]/gi,'')}"><div style="height:100%;background:var(--accent);border-radius:2px;width:0%"></div></div>`;
       row.append(radio, info);
       if (!cached){
@@ -1533,6 +1543,8 @@ async function init(){
         let cancelled = false;
         dl.onclick = async ()=>{
           const key = m.id.replace(/[^a-z0-9]/gi,'');
+          // Mark as downloading (to detect incomplete on refresh)
+          try { localStorage.setItem('mt_dl_'+key, 'downloading'); } catch(_){}
           const statEl = document.getElementById('mstat-'+key);
           const progEl = document.getElementById('mprog-'+key);
           if (statEl) statEl.textContent = 'Downloading…';
@@ -1560,8 +1572,10 @@ async function init(){
             await Engines.ensureWhisperWorker();
             Engines.whisperModel = prevModel;
             Engines.resetWhisperWorker();
+            try { localStorage.setItem('mt_dl_'+key, 'done'); } catch(_){}
             if (statEl) statEl.textContent = '✓ Downloaded';
           }catch(e){
+            try { localStorage.removeItem('mt_dl_'+key); } catch(_){}
             if (cancelled){
               if (statEl) statEl.textContent = 'Download cancelled';
               // Clean up partial download
@@ -1577,9 +1591,11 @@ async function init(){
           }
         };
         row.append(dl);
-      } else if (m.id !== current){
+      } else {
+        // Show Delete for cached models (including current) - P: allow deleting corrupted downloads
         const del = document.createElement('button');
         del.className = 'btn btn-ghost btn-small'; del.textContent = 'Delete';
+        del.style.marginLeft = '4px';
         del.onclick = async ()=>{
           if (!confirm(`Delete ${m.name} model files?`)) return;
           await deleteModelCache(m.id);
@@ -1674,7 +1690,8 @@ async function init(){
     } catch(_){}
     // Model short name
     const mid = (Engines && Engines.whisperModel) || '';
-    const mshort = mid.includes('tiny') ? 'tiny' : mid.includes('base') ? 'base'
+    const mshort = mid.includes('turbo') ? 'turbo'
+      : mid.includes('tiny') ? 'tiny' : mid.includes('base') ? 'base'
       : mid.includes('small') ? 'small' : mid.includes('medium') ? 'medium'
       : mid.includes('large') ? 'large' : '';
     b.textContent = mshort ? backend + ' · ' + mshort : backend;
