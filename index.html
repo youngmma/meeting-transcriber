@@ -868,7 +868,19 @@ const App = {
     // Pre-download whisper model NOW (while user handles permission popups),
     // so background transcription of chunk 1 starts immediately at 5:00
     // instead of waiting for a 77MB download mid-recording.
-    Engines.ensureWhisperWorker().catch(()=>{});
+    // P5: Pre-check model loading (non-blocking)
+    Engines.ensureWhisperWorker().then(w=>{
+      if (!w){
+        // Worker failed - warn user but don't block recording (P21)
+        setTimeout(()=>{
+          if (confirm('Transcription model failed to load. Recording will continue, but transcription may fail.\n\nSwitch to Standard (base) model?')){
+            Engines.whisperModel = 'Xenova/whisper-base';
+            Engines.resetWhisperWorker();
+            Engines.ensureWhisperWorker().catch(()=>{});
+          }
+        }, 2000);
+      }
+    }).catch(()=>{});
     Engines._sessionLang = null; // reset language cache for new session
     const topic = $('topicInput').value;
     // 1) capture (permission popup)
@@ -960,6 +972,18 @@ const App = {
     this.pumpQueue();
   },
 
+  // P4: Wake Lock to prevent screen sleep during transcription
+  async _requestWakeLock(){
+    try {
+      if ('wakeLock' in navigator){
+        this._wakeLock = await navigator.wakeLock.request('screen');
+      }
+    } catch(_){}
+  },
+  _releaseWakeLock(){
+    try { this._wakeLock && this._wakeLock.release(); } catch(_){}
+    this._wakeLock = null;
+  },
   updateTxProg(){
     if (!this.meeting) return;
     // If whisper model is still downloading, show that instead of a stuck "0/N chunks"
@@ -975,12 +999,19 @@ const App = {
       // Recording, no chunks finished yet (first 5 minutes)
       txt = 'Recording… background transcription starts after 5 minutes';
     } else if (this.meeting.chunksDone >= this.meeting.chunksTotal){
-      // "done" is misleading while still recording — transcription only caught up so far
       const n = this.meeting.chunksTotal;
+      const failed = this.meeting.chunksFailed||0;
       const cn = n === 1 ? '1 chunk' : `${n} chunks`;
-      txt = AudioCap.stopping
-        ? `Transcription done (${cn})`
-        : 'Recording… transcription up to date';
+      if (failed > 0){
+        // P6: honest about failures
+        txt = AudioCap.stopping
+          ? `Transcription done with ${failed} failed (${cn})`
+          : `Recording… ${failed}/${n} chunks failed`;
+      } else {
+        txt = AudioCap.stopping
+          ? `Transcription done (${cn})`
+          : 'Recording… transcription up to date';
+      }
     } else {
       txt = `Transcribing… ${this.meeting.chunksDone}/${this.meeting.chunksTotal} chunks${winTxt}`;
     }
@@ -1003,6 +1034,7 @@ const App = {
   },
 
   async pumpQueue(){
+    this._requestWakeLock();
     if (this.processing) return;
     this.processing = true;
     try {
@@ -1013,7 +1045,7 @@ const App = {
           this.meeting.chunksDone++; this.updateTxProg();
         }
       }
-    } finally { this.processing = false; }
+    } finally { this.processing = false; this._releaseWakeLock(); }
   },
 
   async transcribeJob({meetingId, chunkIndex}){
@@ -1036,12 +1068,29 @@ const App = {
       byChunk[chunkIndex] = labeled;
       engByChunk[chunkIndex] = engine;
       await put('checkpoints', { ...(cp||{}), meetingId, segmentsByChunk:byChunk, enginesByChunk:engByChunk });
+      this._consecFails = 0; // P8: reset on success
     } catch(e){
+      // P8: Track consecutive failures
+      this._consecFails = (this._consecFails||0) + 1;
+      if (this._consecFails >= 3){
+        const stop = confirm(`Transcription failed ${this._consecFails} times in a row.\n\nStop transcription? (Audio is saved)`);
+        if (stop){
+          this.queue.length = 0; // clear queue
+          this._consecFails = 0;
+          return;
+        } else {
+          this._consecFails = 0; // reset and continue
+        }
+      }
       console.error('Chunk transcription failed', chunkIndex, e);
       // A tiny trailing chunk (< ~2s of audio, e.g. user stopped right after a
       // 5-minute rotation) may not decode — skip silently instead of flagging an error.
       const tiny = rec.blob && rec.blob.size < 12000;
       if (tiny) return;
+      // P6: track failures for honest status
+      if (this.meeting && this.meeting.id === meetingId){
+        this.meeting.chunksFailed = (this.meeting.chunksFailed||0) + 1;
+      }
       try {
         const cp2 = await get('checkpoints', meetingId);
         if (cp2){
@@ -1183,7 +1232,7 @@ const App = {
     const card = $('recoveryCard');
     const auds = (await all('audio')).filter(a=>a.meetingId===meetingId)
       .sort((a,b)=>a.chunkIndex-b.chunkIndex);
-    if (!auds.length && !Object.keys(cp.segmentsByChunk||{}).length){ alert('No audio to recover.'); return; }
+    if (!auds.length && !Object.keys(cp.segmentsByChunk||{}).length){ alert('No audio to recover. The recording may have been deleted by retention policy.'); return; }
     const doneIdx = new Set(Object.keys(cp.segmentsByChunk||{}).map(Number));
     for (const a of auds) if (!doneIdx.has(a.chunkIndex)) this.queue.push({meetingId, chunkIndex:a.chunkIndex});
     this.meeting = { id:meetingId, chunksDone:doneIdx.size, chunksTotal:auds.length, recovering:true };
@@ -1214,7 +1263,7 @@ const App = {
     (async ()=>{
       const idx = Math.floor(absSec / CHUNK_SEC);
       const rec = await get('audio', [meetingId, idx]);
-      if (!rec){ alert('The audio was deleted (retention policy).'); return; }
+      if (!rec){ alert('The audio was deleted (retention policy). The transcript is kept.'); return; }
       if (this.audioEl) { this.audioEl.pause(); }
       const url = URL.createObjectURL(rec.blob);
       this.audioEl = new Audio(url);
@@ -1285,7 +1334,24 @@ async function renderList(){
       await del('checkpoints', t.id);
       renderList();
     };
-    row.append(info, open, delBtn);
+    // P7: Retry button for failed transcriptions (0 segments)
+    if ((t.segCount||0) === 0){
+      const retryBtn = document.createElement('button'); retryBtn.className='btn btn-small';
+      retryBtn.type='button'; retryBtn.textContent='Retry';
+      retryBtn.style.marginLeft = '4px';
+      retryBtn.onclick = async ()=>{
+        if (!confirm(`Retry transcription for "${t.title}"?`)) return;
+        try {
+          await App.doRecover(t.id);
+        } catch(e){
+          alert('Retry failed: ' + String((e && e.message) || e).slice(0,100));
+        }
+        renderList();
+      };
+      row.append(info, open, retryBtn, delBtn);
+    } else {
+      row.append(info, open, delBtn);
+    }
     box.appendChild(row);
   }
 }

@@ -83,6 +83,16 @@ self.onmessage = async (e) => {
             asr = await tryLoad('wasm', 'q8');
           } else throw e;
         }
+        // P2: If small/medium still fails with OOM, fallback to base
+        if (!asr && isOOM && /whisper-(small|medium)/.test(modelId)){
+          self.postMessage({ type: 'modelProgress', file: 'falling back to base model', loaded: 0, total: 1 });
+          const baseId = 'Xenova/whisper-base';
+          asr = await pipeline('automatic-speech-recognition', baseId, {
+            device: 'wasm', dtype: 'q8', progress_callback: progCb,
+          });
+          modelId = baseId;
+          self.postMessage({ type: 'baseFallback' });
+        }
       }
       self.postMessage({ type: 'ready', device });
     } else if (m.type === 'detect') {
