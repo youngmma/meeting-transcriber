@@ -1970,6 +1970,9 @@ async function init(){
           const progEl = document.getElementById('mprog-'+key);
           if (statEl) statEl.textContent = 'Downloading…';
           if (progEl) progEl.style.display = 'block';
+          // P71: disable all other download buttons during download to prevent concurrent downloads
+          const allDlBtns = document.querySelectorAll('#modelList button');
+          allDlBtns.forEach(b=>{ if (b!==dl && b.textContent==='Download') b.disabled = true; });
           const bar = progEl ? progEl.firstChild : null;
           let cancelled = false;
           let cancelReject = null;
@@ -2000,6 +2003,8 @@ async function init(){
             if (!w) throw new Error('Model failed to load');
             try { localStorage.setItem('mt_dl_'+key, 'done'); } catch(_){}
             if (statEl) statEl.textContent = '✓ Downloaded';
+            // P70: auto-refresh after download so badge and all state are clean
+            setTimeout(()=>{ window.location.reload(); }, 1000);
           }catch(e){
             try { localStorage.removeItem('mt_dl_'+key); } catch(_){}
             if (cancelled){
@@ -2106,6 +2111,8 @@ async function init(){
         if (!w) throw new Error('Model failed to load');
         try { localStorage.setItem('mt_dl_'+key, 'done'); } catch(_){}
         if (statEl) statEl.textContent = '✓ Downloaded';
+        // P70: auto-refresh after download so badge and all state are clean
+        setTimeout(()=>{ window.location.reload(); }, 1000);
       }catch(e){
         try { localStorage.removeItem('mt_dl_'+key); } catch(_){}
         if (String((e&&e.message)||e).includes('cancelled')){
