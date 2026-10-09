@@ -6,8 +6,12 @@
 <title>Meeting Transcriber</title>
 <meta name="description" content="A personal tool for recording meetings and transcribing them in the browser. Audio never leaves the device.">
 <meta name="theme-color" content="#1f3a5f">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <link rel="manifest" href="./manifest.json">
 <link rel="icon" type="image/svg+xml" href="./icons/icon.svg">
+<link rel="apple-touch-icon" href="./icons/icon.svg">
 <style>
 :root{
   --navy:#1e3a5f; --navy-dark:#152a45; --accent:#2f7cf6; --accent-dark:#1f63d8;
@@ -183,13 +187,6 @@ footer.foot{max-width:720px; margin:0 auto; padding:0 16px 36px; color:var(--mut
   .card{padding:16px}
 }
 </style>
-<meta name="theme-color" content="#1a73e8">
-<meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="default">
-<link rel="manifest" href="./manifest.json">
-<link rel="icon" type="image/svg+xml" href="./icons/icon.svg">
-<link rel="apple-touch-icon" href="./icons/icon.svg">
 <script>
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', function () {
@@ -369,8 +366,6 @@ if ('serviceWorker' in navigator) {
 <script type="module">
 'use strict';
 /* ============ utils (same behavior as TDD-verified logic) ============ */
-// Round 2 fix: these are assigned inside init() (which owns MODELS/isModelCached);
-// module-scope bindings let Engines/App call sites use typeof-guards correctly.
 let updateEngineBadge = null;
 let updateModelStatusNote = null;
 let refreshModelStatus = null;
@@ -403,34 +398,22 @@ function filterHallucinations(segs){
   const out = [];
   let prevNorm = null, repeat = 0;
   for (const g of segs) {
-    // Round 2 (Task A): timestamp validation — drop chunks where end <= start
-    // (broken timestamps like [18→0] corrupt SRT/timeline output)
     if (g.end != null && g.start != null && g.end <= g.start) continue;
     const n = normalizeText(g.text);
     if (!n) continue;
-    // Cycle 1 fix: substring match for longer boilerplate phrases.
-    // Short phrases (e.g. '감사합니다') use exact match only to avoid
     // filtering legitimate repetitions like "감사합니다 감사합니다".
     let isBoilerplate = b.has(n);
     if (!isBoilerplate){
       for (const bp of b){ if (bp && bp.length >= 12 && n.includes(bp)) { isBoilerplate = true; break; } }
     }
     if (isBoilerplate) continue;                 // drop boilerplate phrases / empty segments
-    // Round 2 (Task A): character-level loop detection — catches "-1.5.5.5…×200",
-    // ">>"×667, "만"×80 style garbage that word-level gates miss.
-    // If any single character makes up >60% of the text, it's a loop.
-    // Cycle 1 fix: threshold 20→10 ("-1.5.5.5..." normalizes to 19 chars)
     if (n.length >= 10){
       const freq = {};
       for (const ch of n) freq[ch] = (freq[ch]||0)+1;
       const sVals = Object.values(freq).sort((a,b)=>b-a);
       const maxFreq = sVals[0];
       if (maxFreq / n.length > 0.6) continue;
-      // Video UAT: top-2 dominance catches alternating loops ("어/이", "ab"×100)
-      // that evade single-char and unit checks. Natural text rarely exceeds 90%.
       if (n.length >= 20 && sVals.length >= 2 && (sVals[0]+sVals[1]) / n.length > 0.9) continue;
-      // Substring loop: check if text is mostly a repeated unit (e.g. "이제,이제,이제")
-      // by testing if removing the most common 1-4 char unit collapses >70%.
       let loopFound = false;
       for (let ulen=1; ulen<=4 && !loopFound; ulen++){
         const units = {};
@@ -444,8 +427,6 @@ function filterHallucinations(segs){
       }
       if (loopFound) continue;
     }
-    // Video UAT: consecutive identical words ("You"×400 embedded in real text)
-    // evade char/unit checks. Natural speech rarely exceeds 10.
     {
       const _w = n.split(/\s+/).filter(Boolean);
       let _mr = 1, _r = 1;
@@ -454,16 +435,11 @@ function filterHallucinations(segs){
     }
     if (n === prevNorm) { repeat++; if (repeat >= 2) continue; } // collapse repeats of 3+
     else { prevNorm = n; repeat = 0; }
-    // Gate: compression ratio — highly repetitive text is likely hallucination
     const words = n.split(/\s+/);
     if (words.length >= 12) {
       const uniq = new Set(words);
       if (uniq.size / words.length < 0.25) continue;
     }
-    // Gate: abnormal length — >800 WPM or <3 words in >15s is suspicious.
-    // (15-cycle video UAT: Whisper chunk timestamps are imprecise; legitimate
-    // fast speech in short chunks routinely measures 300-400 WPM. 300 threshold
-    // dropped 229/4354 legitimate segments (5.3%). 800 catches only true runaway.)
     const dur = (g.end - g.start) || 0;
     if (dur > 0) {
       const wpm = words.length / (dur / 60);
@@ -515,7 +491,6 @@ function download(name, text, mime){
   a.download = name; document.body.appendChild(a); a.click();
   setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 4000);
 }
-// C2: strip characters browsers mangle in filenames (":", "/", "\", …).
 // Same sanitization the Audio export already uses.
 function safeFilename(title, ext){
   const base = String(title||'meeting').replace(/[^\w\- ]+/g,'').trim().slice(0,60) || 'meeting';
@@ -586,7 +561,6 @@ const AudioCap = {
   chunkTimer:0, mimeType:'', stopping:false,
 
   async start(){
-    // 1) system audio (others) — skipped on devices without getDisplayMedia (e.g. iPad Safari): mic-only
     const hasGDM = !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia);
     if (hasGDM){
       this.displayStream = await navigator.mediaDevices.getDisplayMedia({ video:true, audio:true });
@@ -651,10 +625,6 @@ const AudioCap = {
     this.mimeType = mime;
     this.stopping = false;
     this.startChunkRecorder();
-    // Rotate the recorder every 5 minutes. Each chunk must be a standalone valid
-    // WebM file: MediaRecorder.start(timeslice) only writes the init segment into
-    // the FIRST blob, so later blobs fail decodeAudioData ("Unable to decode audio
-    // data") and only the first 5 minutes ever transcribe. Stop/start avoids that.
     this.chunkTimer = setInterval(()=>{ this.rotateChunk(); }, CHUNK_SEC*1000);
   },
 
@@ -667,7 +637,6 @@ const AudioCap = {
   async rotateChunk(){
     if (this.stopping) return;
     const old = this.recorder;
-    // Start the new recorder first (tiny overlap beats a gap), then stop the old one.
     this.startChunkRecorder();
     if (old && old.state !== 'inactive'){
       const blob = await new Promise(res=>{
@@ -676,7 +645,6 @@ const AudioCap = {
       });
       if (blob && this.onChunk) this.onChunk(blob, this.chunkIndex++);
     }
-    // old was null/inactive → we just started fresh, nothing to save
   },
 
   startMeters(){
@@ -729,7 +697,6 @@ const Engines = {
     try{
       const c = await caches.open('meeting-transcriber-whisper');
       const keys = await c.keys();
-      // based on the selected multilingual model. English-only (.en) cache excluded
       const mid = this.whisperModel || 'Xenova/whisper-small';
       this.whisperCached = keys.some(k=>k.url.includes('/'+mid+'/') && !k.url.includes('.en/'));
     }catch(_){ this.whisperCached = false; }
@@ -741,8 +708,6 @@ const Engines = {
   /** Prepare the whisper worker (incl. model load). Returns null on failure → main-thread fallback */
   ensureWhisperWorker(){
     if (this._workerReady) return this._workerReady;
-    // Round 2: generation counter — a superseded attempt (cancel/reset + retry)
-    // must never mutate shared state when its stale timeout fires.
     const gen = ++this._workerGen;
     this._workerReady = (async ()=>{
       const model = this.whisperModel;
@@ -765,7 +730,6 @@ const Engines = {
             try { if (typeof updateEngineBadge==='function') updateEngineBadge(); } catch(_){}
             try { if (typeof updateModelStatusNote==='function') updateModelStatusNote(); } catch(_){} }
         };
-        // if the worker script itself fails to load (firewall etc.), no message ever arrives — detect via error event
         const herr = ()=>{ clearTimeout(to); w.removeEventListener('message',h); w.removeEventListener('error',herr); rej(new Error('worker script load failed')); };
         w.addEventListener('message', h);
         w.addEventListener('error', herr);
@@ -776,12 +740,8 @@ const Engines = {
         if (wr && wr._activeDevice){ this._activeDevice = wr._activeDevice; this._activeDtype = wr._activeDtype; this._activeModel = wr._activeModel; }
         return wr; }
       catch(e){ console.warn('Worker init failed, falling back to main thread:', e);
-        // Round 2: only mutate shared state if this attempt is still current.
-        // A stale 180s timeout from a cancelled/superseded attempt must not
-        // wipe the NEW worker's state or spuriously set _workerFailed.
         if (this._workerGen === gen){
           try{ w.terminate(); }catch(_){} this._worker=null;
-          // Clear cache so next call retries instead of returning cached null
           this._workerReady = null; this._workerFailed = true;
         }
         return null; }
@@ -810,11 +770,9 @@ const Engines = {
         const m = e.data||{};
         if (m.id!==id) return;
         clearTimeout(to); w.removeEventListener('message',h);
-        // If detection fails, return null (not 'en') so Whisper auto-detects during transcription
         if (m.type==='detected' && m.language) res(m.language); else res(null);
       };
       w.addEventListener('message', h);
-      // always transfer a copy (transferring the original buffer empties the caller's array)
       const s = pcm.slice(0, Math.min(pcm.length, 480000));
       w.postMessage({ type:'detect', id, pcm:s }, [s.buffer]);
     });
@@ -825,21 +783,14 @@ const Engines = {
     const w = await this.ensureWhisperWorker();
     if (w){
       const id = ++this._txSeq;
-      // Round 2 (#3): capture worker identity — if resetWhisperWorker runs
-      // mid-flight, fail fast instead of burning the 10-min timeout.
       const myWorker = w, myGen = this._workerGen;
       return new Promise((res, rej)=>{
         let settled = false;
         const done = (fn, v)=>{ if(!settled){ settled=true; clearTimeout(to); clearInterval(live); w.removeEventListener('message',h); fn(v); } };
-        // 10-min timeout: if the worker was killed (memory pressure), fail fast
-        // instead of hanging forever ("Saving…" stuck). Caller records the error.
         const to = setTimeout(()=>{
-          // Round 2 (#3): invalidate the corpse so the NEXT chunk re-inits
-          // a fresh worker instead of posting to the dead one (10 min each).
           if (this._worker === myWorker && this._workerGen === myGen){ this._workerReady = null; }
           done(rej, new Error('transcription timeout: worker unresponsive (10 min)'));
         }, 600000);
-        // Liveness probe: every 2s, check the worker wasn't replaced/killed.
         const live = setInterval(()=>{
           if (this._worker !== myWorker || this._workerGen !== myGen){
             done(rej, new Error('worker replaced mid-transcription'));
@@ -871,7 +822,6 @@ const Engines = {
     const { pipeline, env } = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.0/dist/transformers.min.js');
     env.cacheKey = 'meeting-transcriber-whisper';
     const prog = (p)=>{ this.onProgress && this.onProgress('whisper', p.file||'', p.loaded||0, p.total||0); };
-    // Mirror the worker's device/dtype policy (turbo prefers q4 for size)
     const isTurboModel = /whisper-large-v3-turbo/.test(this.whisperModel);
     let device = 'wasm', dtype = isTurboModel ? 'q4' : 'q8';
     try {
@@ -894,7 +844,6 @@ const Engines = {
       if (!this.whisper && isOOM && dtype !== 'q4') {
         try { this.whisper = await tryMain('wasm', 'q4'); this._q4fallback = true; } catch(_){}
       }
-      // P2: base fallback (same as worker)
       if (!this.whisper && isOOM && /whisper-(small|medium|large)/.test(this.whisperModel)){
         try {
           this.whisper = await pipeline('automatic-speech-recognition', 'Xenova/whisper-base',
@@ -935,14 +884,9 @@ const Engines = {
    *  onWin(done,total): per-30s-window progress callback */
   async transcribeChunk(pcm, onWin){
     if (this.isSilent(pcm)) return { segs:[], engine:'none' };
-    // whisper: split into 30s windows directly → per-window progress + worker inference (no page freeze)
-    // repeat hallucinations blocked twice: worker no_repeat_ngram_size + collapseRepeats here
     const SR=16000, WIN=30*SR, STEP=25*SR, OVERLAP=5;
     const starts=[];
     for (let s=0; s<pcm.length; s+=STEP) starts.push(s);
-    // language detection (once per chunk, first window). Without it transformers.js pins to English,
-    // which turns Korean speech into English translations ("No language specified - defaulting to English")
-    // Cache across chunks: same session = same language, skip re-detection (~10s saved per chunk).
     let lang = this._sessionLang || null;
     if (!this._sessionLang){
       // Pinned language from Settings skips auto-detection
@@ -975,8 +919,6 @@ const Engines = {
     }
     const filtered = filterHallucinations(segs);
     return { segs: filtered, engine:'whisper', language:lang,
-      // Round 2 (Task A #3): truncation signal — raw segment count before filtering,
-      // so callers can detect degenerate output (e.g. 300s audio → 18s transcript).
       _rawCount: segs.length, _filteredCount: filtered.length };
   }
 };
@@ -1003,7 +945,6 @@ const App = {
   meeting:null, queue:[], processing:false, lastSound:0, silenceWarned:false,
   audioEl:null, silenceTimeoutMin:10,
 
-  // P13: multi-tab coordination (avoid IndexedDB conflicts from two simultaneous recordings)
   _tabId: 'tab-' + Math.random().toString(36).slice(2, 10),
   _bc: null,
   _otherTabRecording: false,
@@ -1025,9 +966,6 @@ const App = {
     } catch(_){}
   },
   _broadcast(type){ try{ this._bc && this._bc.postMessage({ type, from:this._tabId }); }catch(_){} },
-  // Round 2 (Hole 16): navigator.locks for atomic cross-tab mutual exclusion.
-  // The BroadcastChannel ping has a simultaneous-start race (both tabs ping
-  // before either broadcasts). An exclusive lock is atomic: only one tab wins.
   _lockRelease: null,
   async _acquireRecordingLock(){
     if (!('locks' in navigator)) return true; // no API → fall back to BC confirm
@@ -1052,25 +990,24 @@ const App = {
 
   async startRecording(){
     hideBanner('permErr');
-    // E2: clear any stale track-lost banner — it was never cleared, so a new
     // recording would start with last session's error showing.
     try { $('trackLostWarn').classList.remove('show'); } catch(_){}
-    // UAT-9: synchronous re-entrancy guard — double-tap on Start (mobile/laggy UI)
-    // used to race past the P1 guard (this.meeting not yet set) and show a confusing
-    // "Another tab appears to be recording" dialog for the SAME tab.
     if (this._starting) return;
     this._starting = true;
-    // P1: block starting a new recording while previous session is still saving
+    // auto-refresh would fire mid-recording).
+    if (this._dlActive){
+      this._starting = false;
+      alert('A model download is in progress — please wait until it finishes to start recording.');
+      return;
+    }
     if (this.meeting){
       this._starting = false;
       alert('Please wait — the previous recording is still saving. Try again in a moment.');
       return;
     }
     if (!this._bc) this._initBroadcast();
-    // Round 2: atomic lock check (fixes simultaneous-start race in BC ping)
     const lockOk = await this._acquireRecordingLock();
     if (!lockOk && !this._otherTabRecording){
-      // Lock busy but BC didn't know — treat as another tab recording
       this._otherTabRecording = true;
     }
     if (this._otherTabRecording){
@@ -1080,11 +1017,7 @@ const App = {
         return;
       }
     }
-    // Pre-download whisper model NOW (while user handles permission popups),
-    // so background transcription of chunk 1 starts immediately at 5:00
     // instead of waiting for a 77MB download mid-recording.
-    // P5: Pre-check model loading (non-blocking)
-    // B1: wire progress so the recording screen shows MB/percentage, not static text.
     Engines._recDlProg = null;
     Engines.onProgress = (eng, file, loaded, total)=>{
       try{ Engines._recDlProg = { loaded:loaded||0, total:total||0 }; }catch(_){}
@@ -1092,9 +1025,7 @@ const App = {
     Engines.ensureWhisperWorker().then(w=>{
       Engines.onProgress = null; Engines._recDlProg = null; // B1: done
       if (!w){
-        // Worker failed - warn user but don't block recording (P21)
         setTimeout(()=>{
-          // P63: don't prompt if the recording already ended (message would lie)
           if (!App.meeting || App.meeting.recovering) return;
           if (confirm('Transcription model failed to load. Recording will continue, but transcription may fail.\n\nSwitch to Standard (base) model? (80MB, downloads faster)')){
             Engines.whisperModel = 'Xenova/whisper-base';
@@ -1147,7 +1078,7 @@ const App = {
     await put('checkpoints', { meetingId:this.meeting.id, topic:this.meeting.topic,
       startedAt:this.meeting.startedAt, title:this.meeting.title,
       segmentsByChunk:{}, status:'recording' });
-    this.lastSound = Date.now(); this.silenceWarned = false; this._battWarned = false; this._fourHrWarned = false;
+    this.lastSound = Date.now(); this.silenceWarned = false; this._fourHrWarned = false;
     this._chunkTimes = []; this._consecFails = 0; this._battMsg = null; this._battWarned = false; // P15/P8/P62: fresh per-meeting stats
     this._quotaWarned = false; this._lastQuotaCheck = 0; // Round 2 #6: fresh quota state
     try { $('storageFullWarn').classList.remove('show'); } catch(_){}
@@ -1158,20 +1089,16 @@ const App = {
       $('mMic').style.width = Math.min(100, mic*400)+'%';
       $('mSys').style.width = Math.min(100, sys*400)+'%';
       if (mic>0.01 || sys>0.01) this.lastSound = Date.now();
-      // system-audio silence warning (from 15s after start; skipped in mic-only mode)
       const el = $('sysAudioWarn');
       const elapsed = (Date.now()-AudioCap.recStart)/1000;
       if (elapsed>15 && !cap.hasSystemAudio && !cap.micOnly) el.classList.add('show'); else el.classList.remove('show');
-      // silence timeout → non-blocking reminder (never auto-stop)
       const silMin = this.silenceTimeoutMin || 10;
       if (silMin > 0 && !this.silenceWarned && Date.now()-this.lastSound > silMin*60*1000){
         this.silenceWarned = true;
-        // Show warning banner instead of blocking confirm that stops recording
         const tp = $('txProg');
         if (tp) tp.textContent = `⚠️ No sound for ${silMin} min — still recording. Stop manually if done.`;
       }
       // auto-stop at 4 hours
-      // UAT-26: warn at 3.5h so a long recording doesn't stop by surprise.
       if (elapsed > 3.5*3600 && !this._fourHrWarned){
         this._fourHrWarned = true;
         const tp = $('txProg');
@@ -1186,8 +1113,6 @@ const App = {
 
     this._broadcast('recording-started');
     showScreen('scr-rec');
-    // LC-03: hold a screen wake lock for the whole recording (not just transcription).
-    // The OS releases the lock when the tab is hidden; re-acquire on return (see init).
     try { this._requestWakeLock(); } catch(_){}
     const smr = $('sysMeterRow'); if (smr) smr.style.display = (cap && cap.micOnly) ? 'none' : '';
     const rl0 = $('recLabel'); if (rl0) rl0.textContent = 'Recording';
@@ -1218,14 +1143,12 @@ const App = {
     const settings = await get('settings','audioPolicy');
     const policy = settings ? settings.v : '3days';
     const recordedAt = new Date();
-    // Round 2 (#6 HIGH): quota errors must not silently drop chunks.
     try {
       await put('audio', { meetingId:m.id, chunkIndex:idx, blob,
         recordedAt:recordedAt.getTime(),
         expiresAt:(()=>{const e=audioExpiryDate(recordedAt,policy);return e?e.getTime():null;})() });
     } catch(e){
       const isQuota = /quota/i.test(String((e&&e.message)||e));
-      // Don't count a chunk we couldn't save — honest progress, no stuck UI.
       m.chunksFailed = (m.chunksFailed||0) + 1;
       try {
         const cp = await get('checkpoints', m.id);
@@ -1247,12 +1170,10 @@ const App = {
     m.chunksTotal++;
     this.queue.push({ meetingId:m.id, chunkIndex:idx });
     this.updateTxProg();
-    // Round 2 (#6): periodic quota check during recording (warn before we hit the wall)
     this._checkQuotaDuringRecording();
     this.pumpQueue();
   },
 
-  // Round 2 (#6): lightweight quota sampling during recording — warn at 90%
   _lastQuotaCheck: 0,
   async _checkQuotaDuringRecording(){
     try {
@@ -1270,7 +1191,6 @@ const App = {
     } catch(_){}
   },
 
-  // P4: Wake Lock to prevent screen sleep during transcription
   async _requestWakeLock(){
     try {
       if ('wakeLock' in navigator){
@@ -1284,11 +1204,9 @@ const App = {
   },
   updateTxProg(){
     if (!this.meeting) return;
-    // If whisper model is still downloading, show that instead of a stuck "0/N chunks"
     if (!Engines.whisperWorkerReady && !Engines.whisperReady){
       const tp0 = $('txProg');
       if (tp0){
-        // B1: show live MB progress when available, not just static text.
         const p = Engines._recDlProg;
         tp0.textContent = Engines._workerFailed
           ? 'Transcription model failed to load — will retry automatically…'
@@ -1300,7 +1218,6 @@ const App = {
     const winPct = (w && w.t>0) ? Math.round(w.d/w.t*100) : 0;
     const winTxt = (w && w.t>1) ? ` · part ${w.d}/${w.t} (${winPct}%)` : '';
     let txt;
-    // P59: during recovery say "Recovering", not "Recording"
     const mode = this.meeting.recovering ? 'Recovering' : 'Recording';
     if (this.meeting.chunksTotal === 0){
       // Recording, no chunks finished yet (first 5 minutes)
@@ -1312,7 +1229,6 @@ const App = {
       const failed = this.meeting.chunksFailed||0;
       const cn = n === 1 ? '1 chunk' : `${n} chunks`;
       if (failed > 0){
-        // P6: honest about failures
         txt = AudioCap.stopping
           ? `Transcription done with ${failed} failed (${cn})`
           : `${mode}… ${failed}/${n} chunks failed`;
@@ -1326,14 +1242,11 @@ const App = {
       const etaTxt = eta ? ` · ${this._fmtETA(eta)}` : '';
       txt = `${mode==='Recovering'?'Recovering':'Transcribing'}… ${this.meeting.chunksDone}/${this.meeting.chunksTotal} chunks${winTxt}${etaTxt}`;
     }
-    // P62: battery warning survives progress updates
     if (this._battMsg) txt += '\n' + this._battMsg;
-    // UAT Cycle 3: during drain wait, reassure user it's safe to close tab
     if (this._draining) txt += '\nYou can close this tab — audio is saved. Use "Complete transcription" from the list to resume.';
     const tp = $('txProg'); if (tp) tp.textContent = txt;
     const ri = $('recoveryInfo');
     if (ri && $('recoveryCard') && $('recoveryCard').style.display!=='none') ri.textContent = txt;
-    // progress bar: show during recording (live per-window progress) and saving
     const spw = $('saveProgWrap'), sp = $('saveProg');
     if (sp && spw && this.meeting && this.meeting.chunksTotal>0){
       const hasActiveTx = (w && w.t>0) || this.queue.length>0 || this.processing;
@@ -1351,8 +1264,6 @@ const App = {
   async pumpQueue(){
     if (this.processing) return;
     this._requestWakeLock();
-    // P23: Battery warning for long transcription sessions
-    // P62: stored on the instance so updateTxProg() doesn't overwrite it
     try {
       if (navigator.getBattery && !this._battWarned){
         const b = await navigator.getBattery();
@@ -1369,7 +1280,6 @@ const App = {
         await this.transcribeJob(job);
         if (this.meeting && job.meetingId===this.meeting.id){
           this.meeting.chunksDone++; this.updateTxProg();
-          // UAT Cycle 4: refresh list progress during recovery so user sees it moving
           if (this.meeting.recovering){
             try { await renderList(); } catch(_){}
           }
@@ -1378,7 +1288,6 @@ const App = {
     } finally { this.processing = false; this._releaseWakeLock(); }
   },
 
-  // P15: ETA tracking
   _chunkTimes: [],
   _chunkStart: 0,
   _getETA(){
@@ -1404,8 +1313,6 @@ const App = {
       const { segs, engine, _rawCount, _filteredCount } = await Engines.transcribeChunk(pcm, (d,t)=>{
         this.txWin = { d, t }; this.updateTxProg();
       });
-      // Round 2 (Task A #3): truncation guard — if the model emitted segments but
-      // ALL were filtered as garbage, flag it (don't silently record an empty chunk).
       if (_rawCount > 0 && (!_filteredCount || _filteredCount === 0) && engine !== 'none'){
         try {
           const cpT = await get('checkpoints', meetingId);
@@ -1417,7 +1324,6 @@ const App = {
         } catch(_){}
       }
       this.txWin = null;
-      // convert to absolute times + speaker attribution (using session energy)
       const cp = await get('checkpoints', meetingId);
       const abs = segs.map(s=>({ start:s.start+offset, end:s.end+offset, text:s.text }));
       const labeled = attributeSpeakers(abs, App.energyOf(meetingId).mic, App.energyOf(meetingId).sys);
@@ -1425,24 +1331,17 @@ const App = {
       const engByChunk = (cp && cp.enginesByChunk) || {};
       byChunk[chunkIndex] = labeled;
       engByChunk[chunkIndex] = engine;
-      // UAT-23: clear any stale per-chunk error now that it transcribed fine,
-      // so the transcript note / Retry button don't linger after a recovery.
       const errsOk = (cp && cp.transcribeErrors) || {};
       if (errsOk[chunkIndex] !== undefined) delete errsOk[chunkIndex];
       await put('checkpoints', { ...(cp||{}), meetingId, segmentsByChunk:byChunk, enginesByChunk:engByChunk, transcribeErrors:errsOk });
       this._consecFails = 0; // P8: reset on success
-      // P15: record chunk time
       if (this._chunkStart){
         this._chunkTimes.push(Date.now() - this._chunkStart);
         if (this._chunkTimes.length > 5) this._chunkTimes.shift();
       }
     } catch(e){
-      // A tiny trailing chunk (< ~2s of audio, e.g. user stopped right after a
-      // 5-minute rotation) may not decode — skip silently instead of flagging an error.
-      // (Checked BEFORE P8 counting so it doesn't trip the consecutive-failure guard.)
       const tiny = rec.blob && rec.blob.size < 12000;
       if (tiny) return;
-      // P8: Track consecutive failures
       this._consecFails = (this._consecFails||0) + 1;
       if (this._consecFails >= 3){
         const stop = confirm(`Transcription failed ${this._consecFails} times in a row.\n\nStop transcription? (Audio is saved)`);
@@ -1455,7 +1354,6 @@ const App = {
         }
       }
       console.error('Chunk transcription failed', chunkIndex, e);
-      // P6: track failures for honest status
       if (this.meeting && this.meeting.id === meetingId){
         this.meeting.chunksFailed = (this.meeting.chunksFailed||0) + 1;
       }
@@ -1471,15 +1369,12 @@ const App = {
   },
 
   energyOf(meetingId){
-    // current session's energy (empty after recovery → all attributed to 'Other', acceptable)
     if (this.meeting && this.meeting.id===meetingId) return AudioCap.energy;
     return { mic:[], sys:[] };
   },
 
   async stopRecording(){
     if (!this.meeting) return;
-    // UAT-9b: re-entrancy guard — button is disabled synchronously, but programmatic
-    // double-calls would run finalize() twice (duplicate transcripts, double auto-download).
     if (this._stopping) return;
     this._stopping = true;
     const m = this.meeting;
@@ -1487,7 +1382,6 @@ const App = {
     $('btnStop').disabled = true; $('btnStop').textContent = 'Saving…';
     const rl = $('recLabel'); if (rl) rl.textContent = 'Recording stopped';
     const rd = $('recDot'); if (rd){ rd.style.animation='none'; rd.style.background='#4caf50'; }
-    // reset audio level meters (they would otherwise stay frozen at last levels)
     const mm = $('mMic'); if (mm) mm.style.width = '0%';
     const ms = $('mSys'); if (ms) ms.style.width = '0%';
     const spw = $('saveProgWrap'); if (spw){ spw.style.display='block'; $('saveProg').style.width='0%'; }
@@ -1498,11 +1392,6 @@ const App = {
         const idx = AudioCap.chunkIndex;
         await this.onAudioChunk(lastBlob, idx);
       }
-      // wait until the queue drains (refresh progress UI so user sees which chunk is transcribing)
-      // P72: NO timeout — never silently discard untranscribed chunks. If the user
-      // closes the tab, checkpoints preserve state for retry. Data loss is worse than waiting.
-      // UAT Cycle 3: tell user it's safe to leave — audio is saved, can resume via Complete transcription
-      // UAT Cycle 8: update onbeforeunload to not contradict — data is safe now
       window.onbeforeunload = null;
       this._draining = true;
       try {
@@ -1522,7 +1411,6 @@ const App = {
       this._releaseRecordingLock(); // Round 2: release cross-tab exclusive lock
       this._broadcast('recording-stopped');
       window.onbeforeunload = null;
-      // LC-03: release the recording wake lock (pumpQueue holds its own during transcription)
       try { this._releaseWakeLock(); } catch(_){}
       try { document.getElementById('recBanner').style.display='none'; } catch(_){}
       showScreen('scr-list'); renderList();
@@ -1542,7 +1430,6 @@ const App = {
   async finalize(meetingId){
     const cp = await get('checkpoints', meetingId);
     if (!cp) return;
-    // join chunks in order, merging sentences cut at chunk boundaries
     const chunkEntries = Object.entries(cp.segmentsByChunk||{})
       .sort((a,b)=>Number(a[0])-Number(b[0]));
     const allSegs = [];
@@ -1571,15 +1458,9 @@ const App = {
     const engKeys = Object.keys(cp.enginesByChunk||{});
     const engines = [...new Set(engVals)].join('+') || (errs.length ? 'Transcription failed' : (engKeys.length>0 ? 'Silent' : 'Unknown'));
     const note = errs.length ? String(errs[0]).slice(0,120) : (engines==='Silent' ? 'Audio judged silent — transcription skipped' : '');
-    // P72: track chunk completion so incomplete transcripts can offer Retry
     const chunksDone = Object.keys(cp.segmentsByChunk||{}).length;
     const audioChunks = (await all('audio')).filter(a=>a.meetingId===meetingId).length;
     const chunksTotal = Math.max(chunksDone, audioChunks);
-    // UAT-7: re-apply the user's manual edits (keyed by segment start/end)
-    // so a Retry / Complete-transcription rebuild doesn't wipe them.
-    // UAT-20: fuzzy fallback — boundary merging can change a segment's end time
-    // on rebuild (e.g. chunk 1's last segment merges with new chunk 2), so an
-    // exact key miss falls back to matching by start time within 1s.
     const prevT = await get('transcripts', meetingId);
     if (prevT && prevT.edits){
       const editKeys = Object.keys(prevT.edits);
@@ -1601,13 +1482,11 @@ const App = {
       edits: (prevT && prevT.edits) || undefined,
     });
     await put('checkpoints', { ...cp, status:'done' });
-    // if policy is delete-immediately, clean up audio right away
     const settings = await get('settings','audioPolicy');
     if (settings && settings.v==='immediate'){
       const auds = await all('audio');
       for (const a of auds.filter(x=>x.meetingId===meetingId)) await del('audio',[a.meetingId,a.chunkIndex]);
     }
-    // transcription done → auto-download txt (if the browser blocks it, use the list's download button)
     try {
       const t = await get('transcripts', meetingId);
       if (t && t.segments && t.segments.length){
@@ -1623,7 +1502,6 @@ const App = {
     const cps = (await all('checkpoints')).filter(c=>c.status==='recording');
     if (!cps.length){ if (card) card.style.display='none'; return; }
     const cp = cps[0];
-    // P65: surface when more than one interrupted recording exists
     const extra = cps.length > 1 ? ` (+${cps.length-1} more interrupted)` : '';
     const n = Object.keys(cp.segmentsByChunk||{}).length;
     const auds = (await all('audio')).filter(a=>a.meetingId===cp.meetingId)
@@ -1637,14 +1515,13 @@ const App = {
         await put('checkpoints', { ...cp, status:'abandoned' });
         for (const a of auds) await del('audio',[a.meetingId,a.chunkIndex]);
         card.style.display='none';
+        try { await App.checkRecovery(); } catch(_){}
       };
     }
   },
 
   /** Run recovery: re-queue untranscribed chunks, then transcribe */
   async doRecover(meetingId){
-    // P58: never clobber an active recording session — live audio chunks would
-    // be saved under the wrong meeting ID and the rest of the recording lost.
     if (this.meeting && !this.meeting.recovering){
       alert('A recording is in progress. Stop it before retrying transcription.');
       return;
@@ -1653,15 +1530,24 @@ const App = {
       alert('Transcription is already running. Please wait until it finishes.');
       return;
     }
+    if (this._dlActive){
+      alert('A model download is in progress — please wait until it finishes to retry transcription.');
+      return;
+    }
     const cp = await get('checkpoints', meetingId);
     if (!cp) return;
     const card = $('recoveryCard');
     const auds = (await all('audio')).filter(a=>a.meetingId===meetingId)
       .sort((a,b)=>a.chunkIndex-b.chunkIndex);
-    if (!auds.length && !Object.keys(cp.segmentsByChunk||{}).length){ alert('No audio to recover. The recording may have been deleted by retention policy.'); return; }
+    if (!auds.length && !Object.keys(cp.segmentsByChunk||{}).length){
+      const justStarted = cp.startedAt && (Date.now() - cp.startedAt < 10*60*1000);
+      alert(justStarted
+        ? 'No audio to recover — nothing was recorded.'
+        : 'No audio to recover. The recording may have been deleted by retention policy.');
+      return;
+    }
     const doneIdx = new Set(Object.keys(cp.segmentsByChunk||{}).map(Number));
     const missing = auds.filter(a=>!doneIdx.has(a.chunkIndex));
-    // UAT-24: nothing to recover — don't run a futile cycle that ends with a
     // misleading "Recovery done". Explain honestly instead.
     if (!missing.length){
       const errs = Object.values(cp.transcribeErrors||{}).map(String);
@@ -1674,8 +1560,6 @@ const App = {
     for (const a of missing) this.queue.push({meetingId, chunkIndex:a.chunkIndex});
     this.meeting = { id:meetingId, chunksDone:doneIdx.size, chunksTotal:auds.length, recovering:true };
     this._chunkTimes = []; this._consecFails = 0; this._battMsg = null; this._battWarned = false; // Cycle 6/P62: reset per-recovery stats
-    // UAT-11: reset language cache — it may hold a language detected from a DIFFERENT,
-    // later session. Recovery must re-detect (or use pinned setting) for THIS audio.
     Engines._sessionLang = null;
     if (card){
       $('btnRecover').disabled = true; $('btnAbandon').disabled = true;
@@ -1686,6 +1570,7 @@ const App = {
     this.meeting = null;
     if (card){ card.style.display='none'; $('btnRecover').disabled = false; $('btnAbandon').disabled = false; }
     alert('Recovery done. Check the list.');
+    try { await this.checkRecovery(); } catch(_){}
     showScreen('scr-list'); renderList();
   },
 
@@ -1705,7 +1590,6 @@ const App = {
       const idx = Math.floor(absSec / CHUNK_SEC);
       const rec = await get('audio', [meetingId, idx]);
       if (!rec){ alert('The audio was deleted (retention policy). The transcript is kept.'); return; }
-      // P64: revoke the previous segment's object URL (was leaking one per click)
       if (this.audioEl) { this.audioEl.pause(); }
       if (this._segUrl){ try{ URL.revokeObjectURL(this._segUrl); }catch(_){} this._segUrl = null; }
       const url = URL.createObjectURL(rec.blob);
@@ -1727,14 +1611,15 @@ function applyTheme(theme){
 function showScreen(id){
   document.querySelectorAll('.screen').forEach(s=>s.classList.toggle('active', s.id===id));
   window.scrollTo(0,0);
-  // Recording-in-progress banner: visible on all screens except the rec screen itself
   try {
     const rb = document.getElementById('recBanner');
     if (rb) {
       const show = App.meeting && id!=='scr-rec';
       rb.style.display = show ? '' : 'none';
-      // Show "Processing" instead of "Recording" when stopping/saving
-      if (show) rb.textContent = (typeof AudioCap !== 'undefined' && AudioCap.stopping) ? '● Processing' : '● Recording';
+      let recov = false;
+      try { recov = !!(App.meeting && App.meeting.recovering); } catch(_){}
+      if (show) rb.textContent = recov ? '● Transcribing'
+        : (typeof AudioCap !== 'undefined' && AudioCap.stopping) ? '● Processing' : '● Recording';
     }
   } catch(_){}
 }
@@ -1749,7 +1634,6 @@ let currentReadId = null;
 
 async function renderList(){
   const q = ($('searchInput').value||'').trim().toLowerCase();
-  // UAT-13: if IndexedDB is unavailable/corrupted, show a clear error instead of a blank list.
   let items;
   try {
     items = await all('transcripts');
@@ -1762,15 +1646,12 @@ async function renderList(){
   if (q) items = items.filter(t =>
     (t.title||'').toLowerCase().includes(q) ||
     (t.segments||[]).some(s=>(s.text||'').toLowerCase().includes(q)));
-  // P72b: for old transcripts without chunk info, detect incomplete via checkpoint/audio
   let incompleteIds = new Set();
   try {
     const cps = await all('checkpoints');
     const auds = await all('audio');
     for (const t of items){
       if ((t.chunksTotal||0) > (t.chunksDone||0)) { incompleteIds.add(t.id); continue; }
-      // Old transcript: compare checkpoint segments vs audio chunks
-      // P72c: checkpoint store uses keyPath 'meetingId', not 'id'
       const cp = cps.find(c=>(c.meetingId||c.id)===t.id);
       if (cp){
         const doneCount = Object.keys(cp.segmentsByChunk||{}).length;
@@ -1781,7 +1662,6 @@ async function renderList(){
   } catch(_){}
   const box = $('meetList');
   box.innerHTML = '';
-  // P19: Show in-progress transcription at top of list
   try {
     if (App.meeting && !AudioCap.stopping){
       const m = App.meeting;
@@ -1796,7 +1676,6 @@ async function renderList(){
       psub.textContent = `${m.chunksDone}/${m.chunksTotal} chunks · ${pct}%`;
       pinfo.append(ptitle, psub);
       prog.append(pinfo);
-      // P73: hide View button during recovery — scr-rec shows fake 00:00:00 recording UI
       // Progress is already visible here on the list.
       if (!m.recovering){
         const back = document.createElement('button');
@@ -1822,8 +1701,6 @@ async function renderList(){
     const delBtn = document.createElement('button'); delBtn.className='btn btn-ghost btn-small';
     delBtn.type='button'; delBtn.textContent='Delete';
     delBtn.onclick = async ()=>{
-      // D1: never delete a transcript while its "Complete transcription" recovery
-      // is running — the in-flight chunk would re-create a ghost transcript.
       if (typeof App!=='undefined' && App.meeting && App.meeting.recovering && App.meeting.id===t.id){
         alert('Transcription recovery is running for this meeting — please wait until it finishes to delete.');
         return;
@@ -1835,16 +1712,10 @@ async function renderList(){
       await del('checkpoints', t.id);
       renderList();
     };
-    // P11: Retry button for partial failures (has note indicating an error).
-    // Cycle 3 fix: was checking for 'failed' substring only, missing errors like
-    // 'Storage full — audio chunk could not be saved'. Exclude 'silent' notes
     // (nothing to retry when audio was silent).
     const hasFailed = t.note && t.note.trim().length > 0
       && !/silent/i.test(t.note);
-    // P72: also offer Retry for incomplete transcripts (some chunks not transcribed)
-    // P72b: incompleteIds covers old transcripts without chunk info
     const isIncomplete = (t.chunksTotal||0) > (t.chunksDone||0) || incompleteIds.has(t.id);
-    // P7: Retry button for failed transcriptions (0 segments)
     if ((t.segCount||0) === 0 || hasFailed || isIncomplete){
       const retryBtn = document.createElement('button'); retryBtn.className='btn btn-small';
       retryBtn.type='button'; retryBtn.textContent = (t.segCount||0) === 0 ? 'Retry' : (isIncomplete ? 'Complete transcription' : 'Retry failed');
@@ -1862,9 +1733,6 @@ async function renderList(){
     } else {
       row.append(info, open, delBtn);
     }
-    // UAT-8: audio export for every transcript, not just failed ones —
-    // users want their recording even when transcription succeeded.
-    // P16: export audio fallback — let user take the audio elsewhere if transcription keeps failing
     const audioBtn = document.createElement('button'); audioBtn.className='btn btn-ghost btn-small';
     audioBtn.type='button'; audioBtn.textContent='Audio';
     audioBtn.style.marginLeft = '4px';
@@ -1893,8 +1761,6 @@ async function openReader(id){
   $('readTitle').textContent = t.title;
   const dur = t.segments.length ? t.segments[t.segments.length-1].end : 0;
   $('readMeta').textContent = `${fmtClock(t.startedAt)} · ${t.segments.length} segments · about ${fmtDur(dur)}` + (t.engines ? ` · Engine: ${t.engines}` : '') + (t.note ? ` · ${t.note}` : '');
-  // C1: no segments → exporting would produce empty/title-only files. Disable
-  // the buttons with an honest tooltip instead of a confusing empty download.
   const hasSegs = t.segments.length > 0;
   for (const bid of ['btnDlTxt','btnDlSrt','btnCopyTx']){
     const b = $(bid);
@@ -1933,8 +1799,6 @@ async function openReader(id){
           const tt = await get('transcripts', id);
           if (tt && tt.segments[i]){
             tt.segments[i].text = nt;
-            // UAT-7: remember edits keyed by segment time so a later
-            // Retry / Complete-transcription rebuild doesn't wipe them.
             tt.edits = tt.edits || {};
             tt.edits[s.start+'-'+s.end] = nt;
             await put('transcripts', tt);
@@ -1959,8 +1823,9 @@ function txtOf(t){
 
 async function init(){
   // screen switching
-  $('brandHome').onclick = ()=>showScreen(App.meeting ? 'scr-rec' : 'scr-start');
-  $('recBanner').onclick = ()=>showScreen('scr-rec');
+  const recoveringNow = ()=>{ try { return !!(App.meeting && App.meeting.recovering); } catch(_){ return false; } };
+  $('brandHome').onclick = ()=>showScreen(recoveringNow() ? 'scr-list' : (App.meeting ? 'scr-rec' : 'scr-start'));
+  $('recBanner').onclick = ()=>showScreen(recoveringNow() ? 'scr-list' : 'scr-rec');
   if (!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia)){
     const mn = $('micOnlyNote'); if (mn) mn.style.display='block';
   }
@@ -1970,8 +1835,8 @@ async function init(){
   // start/stop
   $('btnStart').onclick = ()=>App.startRecording();
   $('btnStop').onclick = ()=>App.stopRecording();
-  // search
-  $('searchInput').oninput = ()=>renderList();
+  let _searchT = 0;
+  $('searchInput').oninput = ()=>{ clearTimeout(_searchT); _searchT = setTimeout(()=>renderList(), 200); };
   // downloads
   $('btnCopyTx').onclick = async ()=>{
     try {
@@ -2010,31 +1875,24 @@ async function init(){
     {id:'Xenova/whisper-small', name:'Accurate', tech:'small', size:'336MB', desc:'Slower'},
     {id:'onnx-community/whisper-large-v3-turbo', name:'Best', tech:'turbo', size:'656MB', desc:'Slowest'},
   ];
-  // Refresh download status for all models (called when download completes)
   refreshModelStatus = async function(){
-    if (typeof MODELS === 'undefined') return;
+    try { if (typeof MODELS === 'undefined') return; } catch(_){ return; }
     for (const m of MODELS){
       const cached = await isModelCached(m.id);
       const el = document.getElementById('mstat-'+m.id.replace(/[^a-z0-9]/gi,''));
       if (!el) continue;
-      // Round 2 (#4): honor the incomplete-download marker — don't let a
       // partial cache masquerade as "✓ Downloaded".
       let incomplete = false;
       try {
         const key = m.id.replace(/[^a-z0-9]/gi,'');
-        incomplete = localStorage.getItem('mt_dl_'+key) === 'downloading' && cached;
+        incomplete = localStorage.getItem('mt_dl_'+key) === 'downloading';
       } catch(_){}
       el.textContent = incomplete ? '⚠️ Incomplete download — please re-download'
         : cached ? '✓ Downloaded' : 'Not downloaded';
     }
   }
   async function isModelCached(modelId){
-    // P68b: trust the app's own download record first. The localStorage 'done'
-    // marker is set on successful download and cleared on Delete, so it is the
     // most reliable signal. Cache URL matching is a fallback.
-    // UAT-21: a 'downloading' marker (active OR stale from reload/crash) means the
-    // download never completed — never trust URL matches in that case, or the
-    // badge/status note would report a partial model as downloaded.
     try{
       const key = modelId.replace(/[^a-z0-9]/gi,'');
       const st = localStorage.getItem('mt_dl_'+key);
@@ -2044,15 +1902,11 @@ async function init(){
     try{
       const c = await caches.open('meeting-transcriber-whisper');
       const keys = await c.keys();
-      // P68: match modelId without requiring surrounding slashes — Transformers.js
-      // cache URLs vary in structure and the strict '/id/' pattern missed turbo.
-      // Use the most distinctive substring per model as fallback.
       const marker = modelId.includes('turbo') ? 'whisper-large-v3-turbo'
         : modelId.includes('whisper-small') ? 'whisper-small'
         : modelId.includes('whisper-base') ? 'whisper-base'
         : modelId;
       if (keys.some(k=>k.url.includes(marker))) return true;
-      // Last resort: very loose match on tech name (turbo/base/small)
       const loose = modelId.includes('turbo') ? 'turbo'
         : modelId.includes('small') ? 'whisper-small'
         : modelId.includes('base') ? 'whisper-base' : null;
@@ -2063,7 +1917,6 @@ async function init(){
     try{
       const c = await caches.open('meeting-transcriber-whisper');
       const keys = await c.keys();
-      // Match the same loose markers as isModelCached so Delete removes files
       // even when URL structure varies.
       const marker = modelId.includes('turbo') ? 'turbo'
         : modelId.includes('whisper-small') ? 'whisper-small'
@@ -2083,18 +1936,16 @@ async function init(){
     for (const m of MODELS){
       const key = m.id.replace(/[^a-z0-9]/gi,'');
       let cached = await isModelCached(m.id);
-      // Check for incomplete download (was downloading but page refreshed)
       let incomplete = false;
       try {
         const dlState = localStorage.getItem('mt_dl_'+key);
-        if (dlState === 'downloading' && cached){
+        if (dlState === 'downloading'){
           incomplete = true;
           cached = false; // treat as not downloaded
         }
       } catch(_){}
       const row = document.createElement('div');
       row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border)';
-      // UAT-5: show honest status when a download is actively running
       const activeDl = (typeof App !== 'undefined' && App._dlActive === key);
       const radio = document.createElement('input');
       radio.type = 'radio'; radio.name = 'modelPick'; radio.value = m.id;
@@ -2109,9 +1960,6 @@ async function init(){
       if (!cached){
         const dl = document.createElement('button');
         dl.className = 'btn btn-ghost btn-small';
-        // UAT-5: a download may be actively running (in-memory flag survives
-        // re-renders; localStorage marker alone can't tell active from stale).
-        // Never offer a second concurrent Download while one is in flight.
         const dlActiveKey = (typeof App !== 'undefined' && App._dlActive) || null;
         if (dlActiveKey){
           dl.textContent = (dlActiveKey === key) ? 'Downloading…' : 'Download';
@@ -2119,19 +1967,13 @@ async function init(){
         } else {
         dl.textContent = 'Download';
         dl.onclick = async ()=>{
-          // Round 2 (#12): downloading spins up a worker via resetWhisperWorker —
           // never do that while a transcription is running.
-          // A1: also block during RECORDING — resetWhisperWorker would kill the
-          // live transcription worker, and the P70 auto-refresh would fire
-          // mid-recording. Same condition the Delete guard uses (UAT-10).
           if (App.processing || (App.queue && App.queue.length) ||
               (App.meeting && !App.meeting.recovering)){
             alert('A recording or transcription is in progress — please wait until it finishes to download models.');
             return;
           }
           const key = m.id.replace(/[^a-z0-9]/gi,'');
-          // UAT-5: block concurrent downloads (double-click / re-render races).
-          // In-memory flag: a stale localStorage marker (page refreshed mid-download)
           // must NOT block — only an actually-running download does.
           if (App._dlActive){
             if (App._dlActive === key) renderModelList(); // refresh to proper Downloading… state
@@ -2145,7 +1987,6 @@ async function init(){
           const progEl = document.getElementById('mprog-'+key);
           if (statEl) statEl.textContent = 'Downloading…';
           if (progEl) progEl.style.display = 'block';
-          // P71: disable all other download buttons during download to prevent concurrent downloads
           const allDlBtns = document.querySelectorAll('#modelList button');
           allDlBtns.forEach(b=>{ if (b!==dl && b.textContent==='Download') b.disabled = true; });
           const bar = progEl ? progEl.firstChild : null;
@@ -2156,8 +1997,6 @@ async function init(){
           dl.onclick = ()=>{
             cancelled = true;
             if (statEl) statEl.textContent = 'Cancelling…';
-            // Kill the worker and clear the cached promise so the download
-            // actually stops and the next attempt starts fresh (no 180s hang).
             try{ Engines._worker && Engines._worker.terminate(); }catch(_){}
             Engines._worker = null; Engines._workerReady = null; Engines.whisperWorkerReady = false;
             if (cancelReject) cancelReject(new Error('Download cancelled by user'));
@@ -2172,17 +2011,13 @@ async function init(){
           try{
             Engines.whisperModel = m.id;
             Engines.resetWhisperWorker();
-            // ensureWhisperWorker resolves null (not throw) on failure — check it
             const w = await Promise.race([Engines.ensureWhisperWorker(), cancelPromise]);
             if (cancelled) throw new Error('Download cancelled by user');
             if (!w) throw new Error('Model failed to load');
             try { localStorage.setItem('mt_dl_'+key, 'done'); } catch(_){}
             if (statEl) statEl.textContent = '✓ Downloaded';
-            // P70: auto-refresh after download so badge and all state are clean
-            // UAT-22: skip the reload if the user started another download in the
-            // 1s window — reloading mid-download would orphan partial files.
             // A1: also skip if a recording/recovery session is active.
-            setTimeout(()=>{ try{ if (typeof App!=='undefined' && (App._dlActive || App.meeting)) return; }catch(_){} window.location.reload(); }, 1000);
+            setTimeout(()=>{ try{ if (typeof App!=='undefined' && (App._dlActive || App.meeting || App._starting)) return; }catch(_){} window.location.reload(); }, 1000);
           }catch(e){
             try { localStorage.removeItem('mt_dl_'+key); } catch(_){}
             if (cancelled){
@@ -2191,8 +2026,6 @@ async function init(){
               try { await deleteModelCache(m.id); } catch(_){}
             } else {
               if (statEl) statEl.textContent = 'Download failed: ' + String((e&&e.message)||e).slice(0,60);
-              // UAT-6: clean partial files on failure too (not just on cancel),
-              // so isModelCached can't mistake them for a complete model later.
               try { await deleteModelCache(m.id); } catch(_){}
             }
           }finally{
@@ -2209,16 +2042,11 @@ async function init(){
         row.append(dl);
         } // end UAT-5 else (no active download): normal Download button
       } else {
-        // Show Delete for cached models (including current) - P: allow deleting corrupted downloads
         const del = document.createElement('button');
         del.className = 'btn btn-ghost btn-small'; del.textContent = 'Delete';
         del.style.marginLeft = '4px';
         del.onclick = async ()=>{
-          // P61: don't delete model files mid-transcription (badge would flip
           // to "no model downloaded" and confuse the user).
-          // UAT-10: also block during RECORDING — chunk 1 transcription at 5:00
-          // would fail/re-download unexpectedly if the model is deleted mid-recording.
-          // UAT-12: block during active DOWNLOAD — files would be re-created when the
           // download completes, violating the user's delete intent.
           if ((typeof App !== 'undefined') && (App.processing || (App.queue && App.queue.length) ||
               (App.meeting && !App.meeting.recovering) || App._dlActive)){
@@ -2239,34 +2067,26 @@ async function init(){
     }
   }
   async function selectModel(modelId){
-    // Round 2 (#12): never kill the transcription worker mid-session.
     if ((App.processing || (App.queue && App.queue.length)) && Engines.whisperModel !== modelId){
       alert('Transcription is in progress — please wait until it finishes to switch models.');
       renderModelList(); // restore radio to the active model
       return;
     }
-    // A1: never switch models mid-recording — it would reset the worker and,
-    // for an undownloaded model, trigger an auto-download + P70 page refresh
     // in the middle of the user's recording.
     if (App.meeting && !App.meeting.recovering && Engines.whisperModel !== modelId){
       alert('A recording is in progress — please wait until it finishes to switch models.');
       renderModelList(); // restore radio to the active model
       return;
     }
-    // UAT-5: block model switch while another download is actively running.
-    // In-memory flag only — a stale 'downloading' localStorage marker (page
     // refreshed mid-download) must not block the user forever.
     if (App._dlActive){
       alert('A model download is in progress — please wait until it finishes.');
       renderModelList(); // restore radio
       return;
     }
-    // P60: only refresh model-name UI after the guard passes (blocked switch
     // used to briefly show the new model name).
     try { if (typeof updateInstrModelName === 'function') updateInstrModelName(); } catch(_){}
     try { if (typeof updateModelStatusNote === 'function') updateModelStatusNote(); } catch(_){}
-    // Round 2 (#1): supersede check — if another tap changed the model while
-    // we were awaiting, bail out instead of initializing the wrong model.
     Engines.whisperModel = modelId;
     await put('settings',{k:'whisperModel', v:modelId});
     try { if (typeof updateEngineBadge === 'function') updateEngineBadge(); } catch(_){}
@@ -2282,18 +2102,14 @@ async function init(){
       if (statEl) statEl.textContent = 'Downloading…';
       if (progEl) progEl.style.display = 'block';
       const bar = progEl ? progEl.firstChild : null;
-      // Round 2 (#1): own the progress slot — only clear it if still ours,
-      // so a stale tap can't freeze a surviving download's progress UI.
       const myProgress = (eng, file, loaded, total)=>{
         if (bar && total) bar.style.width = Math.round(loaded/total*100)+'%';
         if (statEl && total) statEl.textContent = `Downloading… ${Math.round(loaded/1048576)}MB / ${Math.round(total/1048576)}MB`;
       };
       Engines.onProgress = myProgress;
       try{
-        // Mark as downloading (incomplete-download detection on refresh)
         try { localStorage.setItem('mt_dl_'+key, 'downloading'); } catch(_){}
         App._dlActive = key; // UAT-5: in-memory lock against concurrent downloads
-        // Round 2 (Hole 5A): Cancel button for selectModel auto-download
         let cancelled = false;
         let cancelReject = null;
         const cancelPromise = new Promise((_, rej)=>{ cancelReject = rej; });
@@ -2307,7 +2123,6 @@ async function init(){
           Engines._worker = null; Engines._workerReady = null; Engines.whisperWorkerReady = false;
           if (cancelReject) cancelReject(new Error('Download cancelled by user'));
         };
-        // insert cancel button into the model row (found via stat element)
         const rowEl = statEl ? statEl.closest('div').parentElement : null;
         if (rowEl) rowEl.append(cancelBtn);
         else { const box = $('modelList'); if (box) box.append(cancelBtn); }
@@ -2316,11 +2131,8 @@ async function init(){
         if (!w) throw new Error('Model failed to load');
         try { localStorage.setItem('mt_dl_'+key, 'done'); } catch(_){}
         if (statEl) statEl.textContent = '✓ Downloaded';
-        // P70: auto-refresh after download so badge and all state are clean
-        // UAT-22: skip the reload if the user started another download in the
-        // 1s window — reloading mid-download would orphan partial files.
         // A1: also skip if a recording/recovery session is active.
-        setTimeout(()=>{ try{ if (typeof App!=='undefined' && (App._dlActive || App.meeting)) return; }catch(_){} window.location.reload(); }, 1000);
+        setTimeout(()=>{ try{ if (typeof App!=='undefined' && (App._dlActive || App.meeting || App._starting)) return; }catch(_){} window.location.reload(); }, 1000);
       }catch(e){
         try { localStorage.removeItem('mt_dl_'+key); } catch(_){}
         if (String((e&&e.message)||e).includes('cancelled')){
@@ -2328,8 +2140,6 @@ async function init(){
           try { await deleteModelCache(modelId); } catch(_){}
         } else {
           if (statEl) statEl.textContent = 'Download failed: '+String(e.message||e).slice(0,60);
-          // UAT-6: clean partial files on failure too, so a retry starts fresh
-          // and isModelCached can't mistake partial files for a complete model.
           try { await deleteModelCache(modelId); } catch(_){}
         }
       }finally{
@@ -2347,7 +2157,6 @@ async function init(){
   if (wm && wm.v){
     Engines.whisperModel = wm.v;
   } else {
-    // P33: First run — suggest model based on device memory to avoid OOM
     const mem = (typeof navigator.deviceMemory === 'number') ? navigator.deviceMemory : 8;
     if (mem <= 4){
       Engines.whisperModel = 'Xenova/whisper-base';
@@ -2363,7 +2172,6 @@ async function init(){
     await put('settings',{k:'transcribeLang', v:e.target.value});
     const q = $('langQuick'); if (q) q.value = e.target.value;
   };
-  // Quick language selector on start screen (video UAT: auto-detect fails on Korean)
   const lgQ = await get('settings','transcribeLang');
   const qsel = $('langQuick');
   if (qsel){
@@ -2390,7 +2198,6 @@ async function init(){
         quota = est.quota || 0;
       }
       let txt = `Using about ${Math.round(total/1048576)}MB in this browser.`;
-      // P10: Warn if storage > 90% full
       if (quota > 0 && total / quota > 0.9){
         txt += ` ⚠️ Storage almost full (${Math.round(total/quota*100)}%). Old recordings may be auto-deleted.`;
         el.style.color = 'var(--warn, #b7791f)';
@@ -2402,17 +2209,17 @@ async function init(){
   }
   window.updateStorageInfo = updateStorageInfo;
   $('btnRefreshStorage').onclick = updateStorageInfo;
-  // UAT-25: give the storage-full guidance an actual action — the recording
   // banner points here, but there was no way to free space.
   $('btnFreeAudio').onclick = async ()=>{
     const auds = await all('audio');
     if (!auds.length){ alert('No recordings stored.'); return; }
-    // Keep audio for in-progress / incomplete meetings (needed for retry).
     let liveIds = new Set();
     try {
       const cps = await all('checkpoints');
       for (const c of cps) if (c.status === 'recording') liveIds.add(c.meetingId || c.id);
       if (App.meeting) liveIds.add(App.meeting.id);
+      const ts = await all('transcripts');
+      for (const t of ts) if ((t.chunksTotal||0) > (t.chunksDone||0)) liveIds.add(t.id);
     } catch(_){}
     const deletable = auds.filter(a=>!liveIds.has(a.meetingId));
     if (!deletable.length){ alert('Only recordings for in-progress meetings exist — nothing safe to delete.'); return; }
@@ -2426,8 +2233,6 @@ async function init(){
   updateEngineBadge = async function(){
     const b = $('engineBadge');
     if (!b) return;
-    // Prefer the ACTUAL backend/model reported by the worker (it may differ from
-    // the selection: e.g. turbo forces WASM q4, P2 may fall back to base).
     let backend = 'WASM';
     let activeDevice = Engines && Engines._activeDevice;
     let activeModel = (Engines && Engines._activeModel) || (Engines && Engines.whisperModel) || '';
@@ -2471,7 +2276,6 @@ async function init(){
     else b.style.borderColor = '';
   }
   updateEngineBadge();
-  // Improvement: Instructions show actual selected model name
   function updateInstrModelName(){
     const el = $('instrModelName');
     if (!el) return;
@@ -2518,15 +2322,9 @@ async function init(){
     } catch(_){ el.textContent = ''; }
   }
   updateModelStatusNote();
-  // Refresh badge when model changes
-  const _origSelectModel = typeof selectModel === 'function' ? selectModel : null;
-  // P25: notify when a new app version is available
   (function(){
     if (!('serviceWorker' in navigator)) return;
     const showUpdate = ()=>{
-      // LC-05: never show the update banner during an active recording or
-      // transcription — the "Update now" reload would kill the session.
-      // The update stays pending and applies on the next natural reload.
       try {
         if ((typeof App !== 'undefined') && (App.meeting || App.processing || (App.queue && App.queue.length))) return;
       } catch(_){}
@@ -2535,14 +2333,12 @@ async function init(){
     };
     const btn = $('btnUpdateApp');
     if (btn) btn.onclick = ()=>{
-      // LC-05/LC-10: double-check no session started between banner show and click.
       try {
         if ((typeof App !== 'undefined') && (App.meeting || App.processing || (App.queue && App.queue.length))){
           alert('A recording or transcription is in progress. The update will apply after it finishes — just reload then.');
           return;
         }
       } catch(_){}
-      // LC-10: tell the waiting worker to activate, then reload into the new version.
       try {
         navigator.serviceWorker.ready.then((reg)=>{
           if (reg.waiting) reg.waiting.postMessage('skipWaiting');
@@ -2551,9 +2347,6 @@ async function init(){
       } catch(_){ window.location.reload(); }
     };
     navigator.serviceWorker.ready.then((reg)=>{
-      // P67: only show banner for a genuine pending update, not on every restart.
-      // controllerchange fires on browser restart even with no new version, so we
-      // check reg.waiting instead of listening to controllerchange.
       if (reg.waiting && navigator.serviceWorker.controller) showUpdate();
       reg.addEventListener('updatefound', ()=>{
         const nw = reg.installing;
@@ -2583,7 +2376,6 @@ async function init(){
     for (const s of ['transcripts','audio','checkpoints']) await clearStore(s);
     alert('Deleted.'); showScreen('scr-list'); renderList();
   };
-  // P29: backup all transcripts as JSON
   $('btnBackup').onclick = async ()=>{
     try {
       const items = await all('transcripts');
@@ -2595,16 +2387,12 @@ async function init(){
 
   await App.sweepRetention();
   await Engines.checkCache(); // whisper cache status
-  // cleanup: remove leftover parakeet cache (feature removed; free ~661MB)
   (async()=>{
     try{ indexedDB.deleteDatabase('parakeet-cache-db'); }catch(_){}
     try{ localStorage.removeItem('mt_model_parakeet'); }catch(_){}
   })();
   await App.checkRecovery();
-  // P18: sleep/hidden-tab detection — if hidden >60s during active session, offer resume check
-  // P69: only prompt when transcription actually stalled (no queue progress while hidden),
   // not when recording/transcribing is progressing fine.
-  // LC-03: re-acquire the screen wake lock on return (OS releases it while hidden).
   (()=>{
     let hiddenAt = 0;
     let queueLenAtHide = 0;
@@ -2613,27 +2401,22 @@ async function init(){
         hiddenAt = Date.now();
         try { queueLenAtHide = (App.queue && App.queue.length) || 0; } catch(_){ queueLenAtHide = 0; }
       } else {
-        // E1: OS releases the wake lock while hidden — re-acquire on EVERY return
-        // to visible while a session is active, not just after >60s hides.
         try {
           if ((App.meeting || App.processing) && typeof App._requestWakeLock === 'function') App._requestWakeLock();
         } catch(_){}
         if (hiddenAt && Date.now() - hiddenAt > 60000){
         hiddenAt = 0;
-        // Was something active? Check for in-progress meeting or non-empty queue
         const active = (App.meeting) || (App.queue && App.queue.length);
         if (active){
-          // P69: if the queue shrank while hidden, transcription progressed — don't interrupt
           let queueNow = 0;
           try { queueNow = (App.queue && App.queue.length) || 0; } catch(_){}
           const progressed = queueNow < queueLenAtHide;
-          // If actively recording (meeting exists), chunks are still being added —
           // only warn if queue grew unbounded (sign of stall)
           const recording = !!App.meeting;
           const stalled = recording ? (queueNow > queueLenAtHide + 5) : !progressed;
           if (!stalled) return;
           setTimeout(()=>{
-            if (confirm('This tab was hidden for a while (possible sleep). Transcription may have stalled.\n\nCheck the list and use "Retry" on any incomplete meeting?')){
+            if (confirm('This tab was hidden for a while (possible sleep). Transcription may have stalled.\n\nCheck the list and use "Complete transcription" on any incomplete meeting?')){
               showScreen('scr-list'); renderList();
             }
           }, 500);
@@ -2648,6 +2431,16 @@ async function init(){
   if (navigator.storage && navigator.storage.persist){
     try{ await navigator.storage.persist(); }catch(_){}
   }
+  // what we need.
+  window.addEventListener('storage', (e)=>{
+    try {
+      if (e.key && e.key.indexOf('mt_dl_') === 0){
+        if (typeof updateEngineBadge === 'function') updateEngineBadge();
+        try { if (typeof updateModelStatusNote === 'function') updateModelStatusNote(); } catch(_){}
+        try { if (typeof renderModelList === 'function') renderModelList(); } catch(_){}
+      }
+    } catch(_){}
+  });
 }
 
 document.addEventListener('DOMContentLoaded', init);
