@@ -1154,6 +1154,9 @@ const App = {
 
     this._broadcast('recording-started');
     showScreen('scr-rec');
+    // LC-03: hold a screen wake lock for the whole recording (not just transcription).
+    // The OS releases the lock when the tab is hidden; re-acquire on return (see init).
+    try { this._requestWakeLock(); } catch(_){}
     const smr = $('sysMeterRow'); if (smr) smr.style.display = (cap && cap.micOnly) ? 'none' : '';
     const rl0 = $('recLabel'); if (rl0) rl0.textContent = 'Recording';
     const rd0 = $('recDot'); if (rd0){ rd0.style.animation=''; rd0.style.background=''; }
@@ -1465,6 +1468,8 @@ const App = {
       this._releaseRecordingLock(); // Round 2: release cross-tab exclusive lock
       this._broadcast('recording-stopped');
       window.onbeforeunload = null;
+      // LC-03: release the recording wake lock (pumpQueue holds its own during transcription)
+      try { this._releaseWakeLock(); } catch(_){}
       try { document.getElementById('recBanner').style.display='none'; } catch(_){}
       showScreen('scr-list'); renderList();
       try {
@@ -2281,11 +2286,32 @@ async function init(){
   (function(){
     if (!('serviceWorker' in navigator)) return;
     const showUpdate = ()=>{
+      // LC-05: never show the update banner during an active recording or
+      // transcription — the "Update now" reload would kill the session.
+      // The update stays pending and applies on the next natural reload.
+      try {
+        if ((typeof App !== 'undefined') && (App.meeting || App.processing || (App.queue && App.queue.length))) return;
+      } catch(_){}
       const b = $('updateBanner');
       if (b) b.style.display = 'block';
     };
     const btn = $('btnUpdateApp');
-    if (btn) btn.onclick = ()=>{ window.location.reload(); };
+    if (btn) btn.onclick = ()=>{
+      // LC-05/LC-10: double-check no session started between banner show and click.
+      try {
+        if ((typeof App !== 'undefined') && (App.meeting || App.processing || (App.queue && App.queue.length))){
+          alert('A recording or transcription is in progress. The update will apply after it finishes — just reload then.');
+          return;
+        }
+      } catch(_){}
+      // LC-10: tell the waiting worker to activate, then reload into the new version.
+      try {
+        navigator.serviceWorker.ready.then((reg)=>{
+          if (reg.waiting) reg.waiting.postMessage('skipWaiting');
+          setTimeout(()=>window.location.reload(), 300);
+        }).catch(()=>window.location.reload());
+      } catch(_){ window.location.reload(); }
+    };
     navigator.serviceWorker.ready.then((reg)=>{
       // P67: only show banner for a genuine pending update, not on every restart.
       // controllerchange fires on browser restart even with no new version, so we
@@ -2340,6 +2366,7 @@ async function init(){
   // P18: sleep/hidden-tab detection — if hidden >60s during active session, offer resume check
   // P69: only prompt when transcription actually stalled (no queue progress while hidden),
   // not when recording/transcribing is progressing fine.
+  // LC-03: re-acquire the screen wake lock on return (OS releases it while hidden).
   (()=>{
     let hiddenAt = 0;
     let queueLenAtHide = 0;
@@ -2349,6 +2376,10 @@ async function init(){
         try { queueLenAtHide = (App.queue && App.queue.length) || 0; } catch(_){ queueLenAtHide = 0; }
       } else if (hiddenAt && Date.now() - hiddenAt > 60000){
         hiddenAt = 0;
+        // LC-03: OS releases the wake lock while hidden — re-acquire if session still active
+        try {
+          if ((App.meeting || App.processing) && typeof App._requestWakeLock === 'function') App._requestWakeLock();
+        } catch(_){}
         // Was something active? Check for in-progress meeting or non-empty queue
         const active = (App.meeting) || (App.queue && App.queue.length);
         if (active){
