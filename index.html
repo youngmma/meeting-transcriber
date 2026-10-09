@@ -1878,21 +1878,44 @@ async function init(){
     }
   }
   async function isModelCached(modelId){
+    // P68b: trust the app's own download record first. The localStorage 'done'
+    // marker is set on successful download and cleared on Delete, so it is the
+    // most reliable signal. Cache URL matching is a fallback.
+    try{
+      const key = modelId.replace(/[^a-z0-9]/gi,'');
+      if (localStorage.getItem('mt_dl_'+key) === 'done') return true;
+    }catch(_){}
     try{
       const c = await caches.open('meeting-transcriber-whisper');
       const keys = await c.keys();
       // P68: match modelId without requiring surrounding slashes — Transformers.js
       // cache URLs vary in structure and the strict '/id/' pattern missed turbo.
-      return keys.some(k=>k.url.includes(modelId));
+      // Use the most distinctive substring per model as fallback.
+      const marker = modelId.includes('turbo') ? 'whisper-large-v3-turbo'
+        : modelId.includes('whisper-small') ? 'whisper-small'
+        : modelId.includes('whisper-base') ? 'whisper-base'
+        : modelId;
+      if (keys.some(k=>k.url.includes(marker))) return true;
+      // Last resort: very loose match on tech name (turbo/base/small)
+      const loose = modelId.includes('turbo') ? 'turbo'
+        : modelId.includes('small') ? 'whisper-small'
+        : modelId.includes('base') ? 'whisper-base' : null;
+      return loose ? keys.some(k=>k.url.includes(loose)) : false;
     }catch(_){ return false; }
   }
   async function deleteModelCache(modelId){
     try{
       const c = await caches.open('meeting-transcriber-whisper');
       const keys = await c.keys();
+      // Match the same loose markers as isModelCached so Delete removes files
+      // even when URL structure varies.
+      const marker = modelId.includes('turbo') ? 'turbo'
+        : modelId.includes('whisper-small') ? 'whisper-small'
+        : modelId.includes('whisper-base') ? 'whisper-base'
+        : modelId;
       let n = 0;
       for (const k of keys){
-        if (k.url.includes(modelId)){ await c.delete(k); n++; }
+        if (k.url.includes(marker)){ await c.delete(k); n++; }
       }
       return n;
     }catch(_){ return 0; }
