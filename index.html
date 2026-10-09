@@ -2338,16 +2338,29 @@ async function init(){
   })();
   await App.checkRecovery();
   // P18: sleep/hidden-tab detection — if hidden >60s during active session, offer resume check
+  // P69: only prompt when transcription actually stalled (no queue progress while hidden),
+  // not when recording/transcribing is progressing fine.
   (()=>{
     let hiddenAt = 0;
+    let queueLenAtHide = 0;
     document.addEventListener('visibilitychange', ()=>{
       if (document.hidden){
         hiddenAt = Date.now();
+        try { queueLenAtHide = (App.queue && App.queue.length) || 0; } catch(_){ queueLenAtHide = 0; }
       } else if (hiddenAt && Date.now() - hiddenAt > 60000){
         hiddenAt = 0;
         // Was something active? Check for in-progress meeting or non-empty queue
         const active = (App.meeting) || (App.queue && App.queue.length);
         if (active){
+          // P69: if the queue shrank while hidden, transcription progressed — don't interrupt
+          let queueNow = 0;
+          try { queueNow = (App.queue && App.queue.length) || 0; } catch(_){}
+          const progressed = queueNow < queueLenAtHide;
+          // If actively recording (meeting exists), chunks are still being added —
+          // only warn if queue grew unbounded (sign of stall)
+          const recording = !!App.meeting;
+          const stalled = recording ? (queueNow > queueLenAtHide + 5) : !progressed;
+          if (!stalled) return;
           setTimeout(()=>{
             if (confirm('This tab was hidden for a while (possible sleep). Transcription may have stalled.\n\nCheck the list and use "Retry" on any incomplete meeting?')){
               showScreen('scr-list'); renderList();
