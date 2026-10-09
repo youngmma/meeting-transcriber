@@ -13,7 +13,7 @@
  * old cache during activate.
  */
 
-const APP_VERSION = '1.0.62';
+const APP_VERSION = '1.0.63';
 const SHELL_CACHE = `app-shell-${APP_VERSION}`;
 const RUNTIME_CACHE = `app-runtime-${APP_VERSION}`;
 
@@ -38,8 +38,11 @@ self.addEventListener('install', (event) => {
   event.waitUntil(
     caches
       .open(SHELL_CACHE)
-      .then((cache) => cache.addAll(SHELL_ASSETS))
-      .then(() => self.skipWaiting()),
+      .then((cache) => cache.addAll(SHELL_ASSETS)),
+    // LC-10: do NOT call skipWaiting() here. A new worker activating mid-session
+    // can invalidate caches the running page depends on. Activation happens only
+    // when the user clicks "Update now" (page posts {type:'skipWaiting'}), which
+    // is itself suppressed during active recording/transcription (LC-05).
   );
 });
 
