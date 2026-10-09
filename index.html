@@ -1449,16 +1449,11 @@ const App = {
         await this.onAudioChunk(lastBlob, idx);
       }
       // wait until the queue drains (refresh progress UI so user sees which chunk is transcribing)
-      // 15-min cap: never hang forever on "Saving…" (worker timeouts + P8 make this rare)
-      const drainStart = Date.now();
+      // P72: NO timeout — never silently discard untranscribed chunks. If the user
+      // closes the tab, checkpoints preserve state for retry. Data loss is worse than waiting.
       while (this.queue.length || this.processing){
         this.updateTxProg();
         await new Promise(r=>setTimeout(r,500));
-        if (Date.now() - drainStart > 15*60*1000){
-          console.warn('Drain wait timed out after 15 min; finalizing with what we have.');
-          this.queue.length = 0;
-          break;
-        }
       }
       await this.finalize(m.id);
     } finally {
@@ -1517,10 +1512,15 @@ const App = {
     const engKeys = Object.keys(cp.enginesByChunk||{});
     const engines = [...new Set(engVals)].join('+') || (errs.length ? 'Transcription failed' : (engKeys.length>0 ? 'Silent' : 'Unknown'));
     const note = errs.length ? String(errs[0]).slice(0,120) : (engines==='Silent' ? 'Audio judged silent — transcription skipped' : '');
+    // P72: track chunk completion so incomplete transcripts can offer Retry
+    const chunksDone = Object.keys(cp.segmentsByChunk||{}).length;
+    const audioChunks = (await all('audio')).filter(a=>a.meetingId===meetingId).length;
+    const chunksTotal = Math.max(chunksDone, audioChunks);
     await put('transcripts', {
       id: meetingId, title: cp.title, topic: cp.topic, startedAt: cp.startedAt,
       segments: allSegs, createdAt: Date.now(),
       segCount: allSegs.length, engines, note,
+      chunksDone, chunksTotal,
     });
     await put('checkpoints', { ...cp, status:'done' });
     // if policy is delete-immediately, clean up audio right away
@@ -1714,10 +1714,12 @@ async function renderList(){
     // (nothing to retry when audio was silent).
     const hasFailed = t.note && t.note.trim().length > 0
       && !/silent/i.test(t.note);
+    // P72: also offer Retry for incomplete transcripts (some chunks not transcribed)
+    const isIncomplete = (t.chunksTotal||0) > (t.chunksDone||0);
     // P7: Retry button for failed transcriptions (0 segments)
-    if ((t.segCount||0) === 0 || hasFailed){
+    if ((t.segCount||0) === 0 || hasFailed || isIncomplete){
       const retryBtn = document.createElement('button'); retryBtn.className='btn btn-small';
-      retryBtn.type='button'; retryBtn.textContent = (t.segCount||0) === 0 ? 'Retry' : 'Retry failed';
+      retryBtn.type='button'; retryBtn.textContent = (t.segCount||0) === 0 ? 'Retry' : (isIncomplete ? 'Complete transcription' : 'Retry failed');
       retryBtn.style.marginLeft = '4px';
       retryBtn.onclick = async ()=>{
         if (!confirm(`Retry transcription for "${t.title}"?`)) return;
