@@ -1662,6 +1662,22 @@ async function renderList(){
   if (q) items = items.filter(t =>
     (t.title||'').toLowerCase().includes(q) ||
     (t.segments||[]).some(s=>(s.text||'').toLowerCase().includes(q)));
+  // P72b: for old transcripts without chunk info, detect incomplete via checkpoint/audio
+  let incompleteIds = new Set();
+  try {
+    const cps = await all('checkpoints');
+    const auds = await all('audio');
+    for (const t of items){
+      if ((t.chunksTotal||0) > (t.chunksDone||0)) { incompleteIds.add(t.id); continue; }
+      // Old transcript: compare checkpoint segments vs audio chunks
+      const cp = cps.find(c=>c.id===t.id);
+      if (cp){
+        const doneCount = Object.keys(cp.segmentsByChunk||{}).length;
+        const audioCount = auds.filter(a=>a.meetingId===t.id).length;
+        if (audioCount > doneCount) incompleteIds.add(t.id);
+      }
+    }
+  } catch(_){}
   const box = $('meetList');
   box.innerHTML = '';
   // P19: Show in-progress transcription at top of list
@@ -1715,7 +1731,8 @@ async function renderList(){
     const hasFailed = t.note && t.note.trim().length > 0
       && !/silent/i.test(t.note);
     // P72: also offer Retry for incomplete transcripts (some chunks not transcribed)
-    const isIncomplete = (t.chunksTotal||0) > (t.chunksDone||0);
+    // P72b: incompleteIds covers old transcripts without chunk info
+    const isIncomplete = (t.chunksTotal||0) > (t.chunksDone||0) || incompleteIds.has(t.id);
     // P7: Retry button for failed transcriptions (0 segments)
     if ((t.segCount||0) === 0 || hasFailed || isIncomplete){
       const retryBtn = document.createElement('button'); retryBtn.className='btn btn-small';
