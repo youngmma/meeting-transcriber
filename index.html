@@ -226,6 +226,15 @@ if ('serviceWorker' in navigator) {
       <label class="lbl" for="topicInput">Topic (optional)</label>
       <input type="text" id="topicInput" placeholder="e.g., Weekly team meeting" maxlength="50" autocomplete="off">
       <button class="btn btn-primary" id="btnStart" type="button">Start recording</button>
+      <div style="margin-top:8px;display:flex;align-items:center;gap:8px">
+        <label class="lbl" for="langQuick" style="margin:0">Language:</label>
+        <select id="langQuick" style="flex:1;max-width:200px">
+          <option value="auto" selected>Auto-detect</option>
+          <option value="en">English</option>
+          <option value="ko">Korean (한국어)</option>
+        </select>
+      </div>
+      <div class="muted" style="font-size:12px;margin-top:4px">Pin Korean for Korean sermons — auto-detect often fails on Korean.</div>
       <div class="muted" id="modelStatusNote" style="margin-top:8px;font-size:13px">Checking model…</div>
       <div class="muted" id="micOnlyNote" style="display:none;margin-top:8px">This device doesn't support screen sharing, so recording is mic-only. Meeting audio reaches the mic through the speaker — turn the volume up.</div>
       <div class="banner err" id="permErr"></div>
@@ -412,8 +421,12 @@ function filterHallucinations(segs){
     if (n.length >= 10){
       const freq = {};
       for (const ch of n) freq[ch] = (freq[ch]||0)+1;
-      const maxFreq = Math.max(...Object.values(freq));
+      const sVals = Object.values(freq).sort((a,b)=>b-a);
+      const maxFreq = sVals[0];
       if (maxFreq / n.length > 0.6) continue;
+      // Video UAT: top-2 dominance catches alternating loops ("어/이", "ab"×100)
+      // that evade single-char and unit checks. Natural text rarely exceeds 90%.
+      if (n.length >= 20 && sVals.length >= 2 && (sVals[0]+sVals[1]) / n.length > 0.9) continue;
       // Substring loop: check if text is mostly a repeated unit (e.g. "이제,이제,이제")
       // by testing if removing the most common 1-4 char unit collapses >70%.
       let loopFound = false;
@@ -429,6 +442,14 @@ function filterHallucinations(segs){
       }
       if (loopFound) continue;
     }
+    // Video UAT: consecutive identical words ("You"×400 embedded in real text)
+    // evade char/unit checks. Natural speech rarely exceeds 10.
+    {
+      const _w = n.split(/\s+/).filter(Boolean);
+      let _mr = 1, _r = 1;
+      for (let _i=1; _i<_w.length; _i++){ if (_w[_i]===_w[_i-1]){ _r++; if (_r>_mr) _mr=_r; } else _r=1; }
+      if (_mr >= 10) continue;
+    }
     if (n === prevNorm) { repeat++; if (repeat >= 2) continue; } // collapse repeats of 3+
     else { prevNorm = n; repeat = 0; }
     // Gate: compression ratio — highly repetitive text is likely hallucination
@@ -437,11 +458,14 @@ function filterHallucinations(segs){
       const uniq = new Set(words);
       if (uniq.size / words.length < 0.25) continue;
     }
-    // Gate: abnormal length — >300 WPM or <3 words in >15s is suspicious
+    // Gate: abnormal length — >800 WPM or <3 words in >15s is suspicious.
+    // (15-cycle video UAT: Whisper chunk timestamps are imprecise; legitimate
+    // fast speech in short chunks routinely measures 300-400 WPM. 300 threshold
+    // dropped 229/4354 legitimate segments (5.3%). 800 catches only true runaway.)
     const dur = (g.end - g.start) || 0;
     if (dur > 0) {
       const wpm = words.length / (dur / 60);
-      if (wpm > 300) continue;
+      if (wpm > 800) continue;
       if (words.length < 3 && dur > 15) continue;
     }
     out.push(g);
@@ -2088,7 +2112,18 @@ async function init(){
   $('langSelect').value = lg ? lg.v : 'auto';
   $('langSelect').onchange = async e=>{
     await put('settings',{k:'transcribeLang', v:e.target.value});
+    const q = $('langQuick'); if (q) q.value = e.target.value;
   };
+  // Quick language selector on start screen (video UAT: auto-detect fails on Korean)
+  const lgQ = await get('settings','transcribeLang');
+  const qsel = $('langQuick');
+  if (qsel){
+    qsel.value = lgQ ? lgQ.v : 'auto';
+    qsel.onchange = async e=>{
+      await put('settings',{k:'transcribeLang', v:e.target.value});
+      const s = $('langSelect'); if (s) s.value = e.target.value;
+    };
+  }
   const sil = await get('settings','silenceTimeout');
   App.silenceTimeoutMin = sil ? parseInt(sil.v,10) : 10;
   $('silenceTimeout').value = sil ? sil.v : '10';
@@ -2227,6 +2262,10 @@ async function init(){
     const btn = $('btnUpdateApp');
     if (btn) btn.onclick = ()=>{ window.location.reload(); };
     navigator.serviceWorker.ready.then((reg)=>{
+      // P67: only show banner for a genuine pending update, not on every restart.
+      // controllerchange fires on browser restart even with no new version, so we
+      // check reg.waiting instead of listening to controllerchange.
+      if (reg.waiting && navigator.serviceWorker.controller) showUpdate();
       reg.addEventListener('updatefound', ()=>{
         const nw = reg.installing;
         if (!nw) return;
@@ -2235,8 +2274,6 @@ async function init(){
         });
       });
     }).catch(()=>{});
-    // If a new SW took over while we were open, prompt for reload
-    navigator.serviceWorker.addEventListener('controllerchange', ()=>{ showUpdate(); });
   })();
   // WebGPU + device memory status
   (async ()=>{
