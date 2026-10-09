@@ -1044,8 +1044,14 @@ const App = {
 
   async startRecording(){
     hideBanner('permErr');
+    // UAT-9: synchronous re-entrancy guard — double-tap on Start (mobile/laggy UI)
+    // used to race past the P1 guard (this.meeting not yet set) and show a confusing
+    // "Another tab appears to be recording" dialog for the SAME tab.
+    if (this._starting) return;
+    this._starting = true;
     // P1: block starting a new recording while previous session is still saving
     if (this.meeting){
+      this._starting = false;
       alert('Please wait — the previous recording is still saving. Try again in a moment.');
       return;
     }
@@ -1059,6 +1065,7 @@ const App = {
     if (this._otherTabRecording){
       if (!confirm('Another tab appears to be recording. Starting here may cause conflicts.\n\nStart anyway?')){
         this._releaseRecordingLock();
+        this._starting = false;
         return;
       }
     }
@@ -1102,6 +1109,7 @@ const App = {
     catch(e){
       AudioCap.abort(); // clean up tracks when only screen sharing succeeded
       this._releaseRecordingLock(); // Round 2: don't hold the cross-tab lock on failure
+      this._starting = false; // UAT-9: release re-entrancy guard on failure
       const el = $('permErr');
       if (e && e.name==='NotAllowedError'){
         el.textContent = 'Permission denied. You may have cancelled screen sharing or blocked the mic. Click the lock icon in the address bar → Site settings → Allow, then try again.';
@@ -1118,6 +1126,7 @@ const App = {
       startedAt: startedAt.getTime(), title: formatTitle(startedAt, topic),
       chunksDone:0, chunksTotal:0, status:'recording',
     };
+    this._starting = false; // UAT-9: P1 guard (this.meeting) takes over from here
     await put('checkpoints', { meetingId:this.meeting.id, topic:this.meeting.topic,
       startedAt:this.meeting.startedAt, title:this.meeting.title,
       segmentsByChunk:{}, status:'recording' });
@@ -1292,6 +1301,8 @@ const App = {
     }
     // P62: battery warning survives progress updates
     if (this._battMsg) txt += '\n' + this._battMsg;
+    // UAT Cycle 3: during drain wait, reassure user it's safe to close tab
+    if (this._draining) txt += '\nYou can close this tab — audio is saved. Use "Complete transcription" from the list to resume.';
     const tp = $('txProg'); if (tp) tp.textContent = txt;
     const ri = $('recoveryInfo');
     if (ri && $('recoveryCard') && $('recoveryCard').style.display!=='none') ri.textContent = txt;
@@ -1331,6 +1342,10 @@ const App = {
         await this.transcribeJob(job);
         if (this.meeting && job.meetingId===this.meeting.id){
           this.meeting.chunksDone++; this.updateTxProg();
+          // UAT Cycle 4: refresh list progress during recovery so user sees it moving
+          if (this.meeting.recovering){
+            try { await renderList(); } catch(_){}
+          }
         }
       }
     } finally { this.processing = false; this._releaseWakeLock(); }
@@ -1432,6 +1447,10 @@ const App = {
 
   async stopRecording(){
     if (!this.meeting) return;
+    // UAT-9b: re-entrancy guard — button is disabled synchronously, but programmatic
+    // double-calls would run finalize() twice (duplicate transcripts, double auto-download).
+    if (this._stopping) return;
+    this._stopping = true;
     const m = this.meeting;
     clearInterval(AudioCap.elapsedTimer);
     $('btnStop').disabled = true; $('btnStop').textContent = 'Saving…';
@@ -1451,15 +1470,24 @@ const App = {
       // wait until the queue drains (refresh progress UI so user sees which chunk is transcribing)
       // P72: NO timeout — never silently discard untranscribed chunks. If the user
       // closes the tab, checkpoints preserve state for retry. Data loss is worse than waiting.
-      while (this.queue.length || this.processing){
-        this.updateTxProg();
-        await new Promise(r=>setTimeout(r,500));
+      // UAT Cycle 3: tell user it's safe to leave — audio is saved, can resume via Complete transcription
+      // UAT Cycle 8: update onbeforeunload to not contradict — data is safe now
+      window.onbeforeunload = null;
+      this._draining = true;
+      try {
+        while (this.queue.length || this.processing){
+          this.updateTxProg();
+          await new Promise(r=>setTimeout(r,500));
+        }
+      } finally {
+        this._draining = false;
       }
       await this.finalize(m.id);
     } finally {
       $('btnStop').disabled = false; $('btnStop').textContent = 'Stop and save';
       const spw2 = $('saveProgWrap'); if (spw2) spw2.style.display='none';
       this.meeting = null;
+      this._stopping = false; // UAT-9b: release re-entrancy guard
       this._releaseRecordingLock(); // Round 2: release cross-tab exclusive lock
       this._broadcast('recording-stopped');
       window.onbeforeunload = null;
@@ -1516,11 +1544,30 @@ const App = {
     const chunksDone = Object.keys(cp.segmentsByChunk||{}).length;
     const audioChunks = (await all('audio')).filter(a=>a.meetingId===meetingId).length;
     const chunksTotal = Math.max(chunksDone, audioChunks);
+    // UAT-7: re-apply the user's manual edits (keyed by segment start/end)
+    // so a Retry / Complete-transcription rebuild doesn't wipe them.
+    // UAT-20: fuzzy fallback — boundary merging can change a segment's end time
+    // on rebuild (e.g. chunk 1's last segment merges with new chunk 2), so an
+    // exact key miss falls back to matching by start time within 1s.
+    const prevT = await get('transcripts', meetingId);
+    if (prevT && prevT.edits){
+      const editKeys = Object.keys(prevT.edits);
+      for (const sg of allSegs){
+        const k = sg.start+'-'+sg.end;
+        if (prevT.edits[k] != null && prevT.edits[k] !== sg.text){
+          sg.text = prevT.edits[k];
+        } else if (prevT.edits[k] == null){
+          const fk = editKeys.find(ek => Math.abs(parseFloat(ek.split('-')[0]) - sg.start) < 1.0);
+          if (fk && prevT.edits[fk] !== sg.text) sg.text = prevT.edits[fk];
+        }
+      }
+    }
     await put('transcripts', {
       id: meetingId, title: cp.title, topic: cp.topic, startedAt: cp.startedAt,
       segments: allSegs, createdAt: Date.now(),
       segCount: allSegs.length, engines, note,
       chunksDone, chunksTotal,
+      edits: (prevT && prevT.edits) || undefined,
     });
     await put('checkpoints', { ...cp, status:'done' });
     // if policy is delete-immediately, clean up audio right away
@@ -1585,6 +1632,9 @@ const App = {
     for (const a of auds) if (!doneIdx.has(a.chunkIndex)) this.queue.push({meetingId, chunkIndex:a.chunkIndex});
     this.meeting = { id:meetingId, chunksDone:doneIdx.size, chunksTotal:auds.length, recovering:true };
     this._chunkTimes = []; this._consecFails = 0; this._battMsg = null; this._battWarned = false; // Cycle 6/P62: reset per-recovery stats
+    // UAT-11: reset language cache — it may hold a language detected from a DIFFERENT,
+    // later session. Recovery must re-detect (or use pinned setting) for THIS audio.
+    Engines._sessionLang = null;
     if (card){
       $('btnRecover').disabled = true; $('btnAbandon').disabled = true;
       $('recoveryInfo').textContent = `${cp.title} — transcribing…`;
@@ -1657,7 +1707,15 @@ let currentReadId = null;
 
 async function renderList(){
   const q = ($('searchInput').value||'').trim().toLowerCase();
-  let items = await all('transcripts');
+  // UAT-13: if IndexedDB is unavailable/corrupted, show a clear error instead of a blank list.
+  let items;
+  try {
+    items = await all('transcripts');
+  } catch(e){
+    const box = $('meetList');
+    if (box) box.innerHTML = '<div class="muted" style="padding:20px">Could not load transcripts — browser storage is unavailable or corrupted. Try reloading, or check Settings → Storage.</div>';
+    return;
+  }
   items.sort((a,b)=>b.startedAt-a.startedAt);
   if (q) items = items.filter(t =>
     (t.title||'').toLowerCase().includes(q) ||
@@ -1753,27 +1811,29 @@ async function renderList(){
         renderList();
       };
       row.append(info, open, retryBtn, delBtn);
-      // P16: export audio fallback — let user take the audio elsewhere if transcription keeps failing
-      const audioBtn = document.createElement('button'); audioBtn.className='btn btn-ghost btn-small';
-      audioBtn.type='button'; audioBtn.textContent='Audio';
-      audioBtn.style.marginLeft = '4px';
-      audioBtn.title = 'Download the recording as audio (use another tool if transcription fails)';
-      audioBtn.onclick = async ()=>{
-        try {
-          const auds = (await all('audio')).filter(a=>a.meetingId===t.id).sort((a,b)=>a.chunkIndex-b.chunkIndex);
-          if (!auds.length){ alert('No audio saved for this meeting (retention policy may have deleted it).'); return; }
-          const blob = new Blob(auds.map(a=>a.blob), { type: auds[0].blob.type || 'audio/webm' });
-          const a = document.createElement('a');
-          a.href = URL.createObjectURL(blob);
-          a.download = (t.title||'meeting').replace(/[^\w\- ]+/g,'').trim().slice(0,40) + '.webm';
-          document.body.appendChild(a); a.click();
-          setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 4000);
-        } catch(e){ alert('Could not export audio: ' + String((e&&e.message)||e).slice(0,100)); }
-      };
-      row.append(audioBtn);
     } else {
       row.append(info, open, delBtn);
     }
+    // UAT-8: audio export for every transcript, not just failed ones —
+    // users want their recording even when transcription succeeded.
+    // P16: export audio fallback — let user take the audio elsewhere if transcription keeps failing
+    const audioBtn = document.createElement('button'); audioBtn.className='btn btn-ghost btn-small';
+    audioBtn.type='button'; audioBtn.textContent='Audio';
+    audioBtn.style.marginLeft = '4px';
+    audioBtn.title = 'Download the recording as audio';
+    audioBtn.onclick = async ()=>{
+      try {
+        const auds = (await all('audio')).filter(a=>a.meetingId===t.id).sort((a,b)=>a.chunkIndex-b.chunkIndex);
+        if (!auds.length){ alert('No audio saved for this meeting (retention policy may have deleted it).'); return; }
+        const blob = new Blob(auds.map(a=>a.blob), { type: auds[0].blob.type || 'audio/webm' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = (t.title||'meeting').replace(/[^\w\- ]+/g,'').trim().slice(0,40) + '.webm';
+        document.body.appendChild(a); a.click();
+        setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 4000);
+      } catch(e){ alert('Could not export audio: ' + String((e&&e.message)||e).slice(0,100)); }
+    };
+    row.append(audioBtn);
     box.appendChild(row);
   }
 }
@@ -1816,7 +1876,14 @@ async function openReader(id){
         const nt = ta.value.trim();
         if (nt && nt!==s.text){
           const tt = await get('transcripts', id);
-          if (tt && tt.segments[i]){ tt.segments[i].text = nt; await put('transcripts', tt); }
+          if (tt && tt.segments[i]){
+            tt.segments[i].text = nt;
+            // UAT-7: remember edits keyed by segment time so a later
+            // Retry / Complete-transcription rebuild doesn't wipe them.
+            tt.edits = tt.edits || {};
+            tt.edits[s.start+'-'+s.end] = nt;
+            await put('transcripts', tt);
+          }
         }
         openReader(id);
       };
@@ -1967,6 +2034,8 @@ async function init(){
       } catch(_){}
       const row = document.createElement('div');
       row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border)';
+      // UAT-5: show honest status when a download is actively running
+      const activeDl = (typeof App !== 'undefined' && App._dlActive === key);
       const radio = document.createElement('input');
       radio.type = 'radio'; radio.name = 'modelPick'; radio.value = m.id;
       radio.checked = (m.id === current);
@@ -1974,12 +2043,21 @@ async function init(){
       const info = document.createElement('div');
       info.style.flex = '1';
       info.innerHTML = `<div><b>${m.name}</b> <span class="muted">(${m.tech}, ${m.size})</span> <span class="muted">· ${m.desc}</span></div>
-        <div class="muted" style="font-size:12px" id="mstat-${m.id.replace(/[^a-z0-9]/gi,'')}">${incomplete ? '⚠️ Incomplete download — please re-download' : (cached ? '✓ Downloaded' : 'Not downloaded')}</div>
+        <div class="muted" style="font-size:12px" id="mstat-${m.id.replace(/[^a-z0-9]/gi,'')}">${activeDl ? 'Downloading…' : (incomplete ? '⚠️ Incomplete download — please re-download' : (cached ? '✓ Downloaded' : 'Not downloaded'))}</div>
         <div style="display:none;height:4px;background:var(--border);border-radius:2px;margin-top:4px" id="mprog-${m.id.replace(/[^a-z0-9]/gi,'')}"><div style="height:100%;background:var(--accent);border-radius:2px;width:0%"></div></div>`;
       row.append(radio, info);
       if (!cached){
         const dl = document.createElement('button');
-        dl.className = 'btn btn-ghost btn-small'; dl.textContent = 'Download';
+        dl.className = 'btn btn-ghost btn-small';
+        // UAT-5: a download may be actively running (in-memory flag survives
+        // re-renders; localStorage marker alone can't tell active from stale).
+        // Never offer a second concurrent Download while one is in flight.
+        const dlActiveKey = (typeof App !== 'undefined' && App._dlActive) || null;
+        if (dlActiveKey){
+          dl.textContent = (dlActiveKey === key) ? 'Downloading…' : 'Download';
+          dl.disabled = true;
+        } else {
+        dl.textContent = 'Download';
         dl.onclick = async ()=>{
           // Round 2 (#12): downloading spins up a worker via resetWhisperWorker —
           // never do that while a transcription is running.
@@ -1988,6 +2066,15 @@ async function init(){
             return;
           }
           const key = m.id.replace(/[^a-z0-9]/gi,'');
+          // UAT-5: block concurrent downloads (double-click / re-render races).
+          // In-memory flag: a stale localStorage marker (page refreshed mid-download)
+          // must NOT block — only an actually-running download does.
+          if (App._dlActive){
+            if (App._dlActive === key) renderModelList(); // refresh to proper Downloading… state
+            else alert('A model download is in progress — please wait until it finishes.');
+            return;
+          }
+          App._dlActive = key;
           // Mark as downloading (to detect incomplete on refresh)
           try { localStorage.setItem('mt_dl_'+key, 'downloading'); } catch(_){}
           const statEl = document.getElementById('mstat-'+key);
@@ -2037,8 +2124,12 @@ async function init(){
               try { await deleteModelCache(m.id); } catch(_){}
             } else {
               if (statEl) statEl.textContent = 'Download failed: ' + String((e&&e.message)||e).slice(0,60);
+              // UAT-6: clean partial files on failure too (not just on cancel),
+              // so isModelCached can't mistake them for a complete model later.
+              try { await deleteModelCache(m.id); } catch(_){}
             }
           }finally{
+            App._dlActive = null; // UAT-5: release the in-memory download lock
             Engines.whisperModel = prevModel;
             Engines.resetWhisperWorker();
             Engines.onProgress = null;
@@ -2049,6 +2140,7 @@ async function init(){
           }
         };
         row.append(dl);
+        } // end UAT-5 else (no active download): normal Download button
       } else {
         // Show Delete for cached models (including current) - P: allow deleting corrupted downloads
         const del = document.createElement('button');
@@ -2057,8 +2149,13 @@ async function init(){
         del.onclick = async ()=>{
           // P61: don't delete model files mid-transcription (badge would flip
           // to "no model downloaded" and confuse the user).
-          if ((typeof App !== 'undefined') && (App.processing || (App.queue && App.queue.length))){
-            alert('Transcription is in progress — please wait until it finishes to delete models.');
+          // UAT-10: also block during RECORDING — chunk 1 transcription at 5:00
+          // would fail/re-download unexpectedly if the model is deleted mid-recording.
+          // UAT-12: block during active DOWNLOAD — files would be re-created when the
+          // download completes, violating the user's delete intent.
+          if ((typeof App !== 'undefined') && (App.processing || (App.queue && App.queue.length) ||
+              (App.meeting && !App.meeting.recovering) || App._dlActive)){
+            alert('A recording, transcription, or download is in progress — please wait until it finishes to delete models.');
             return;
           }
           if (!confirm(`Delete ${m.name} model files?`)) return;
@@ -2079,6 +2176,14 @@ async function init(){
     if ((App.processing || (App.queue && App.queue.length)) && Engines.whisperModel !== modelId){
       alert('Transcription is in progress — please wait until it finishes to switch models.');
       renderModelList(); // restore radio to the active model
+      return;
+    }
+    // UAT-5: block model switch while another download is actively running.
+    // In-memory flag only — a stale 'downloading' localStorage marker (page
+    // refreshed mid-download) must not block the user forever.
+    if (App._dlActive){
+      alert('A model download is in progress — please wait until it finishes.');
+      renderModelList(); // restore radio
       return;
     }
     // P60: only refresh model-name UI after the guard passes (blocked switch
@@ -2112,6 +2217,7 @@ async function init(){
       try{
         // Mark as downloading (incomplete-download detection on refresh)
         try { localStorage.setItem('mt_dl_'+key, 'downloading'); } catch(_){}
+        App._dlActive = key; // UAT-5: in-memory lock against concurrent downloads
         // Round 2 (Hole 5A): Cancel button for selectModel auto-download
         let cancelled = false;
         let cancelReject = null;
@@ -2144,8 +2250,12 @@ async function init(){
           try { await deleteModelCache(modelId); } catch(_){}
         } else {
           if (statEl) statEl.textContent = 'Download failed: '+String(e.message||e).slice(0,60);
+          // UAT-6: clean partial files on failure too, so a retry starts fresh
+          // and isModelCached can't mistake partial files for a complete model.
+          try { await deleteModelCache(modelId); } catch(_){}
         }
       }finally{
+        App._dlActive = null; // UAT-5: release the in-memory download lock
         if (Engines.onProgress === myProgress) Engines.onProgress = null;
         if (progEl) progEl.style.display = 'none';
         try { if (typeof updateModelStatusNote === 'function') updateModelStatusNote(); } catch(_){}
