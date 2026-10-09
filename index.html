@@ -1696,10 +1696,14 @@ async function renderList(){
       psub.textContent = `${m.chunksDone}/${m.chunksTotal} chunks · ${pct}%`;
       pinfo.append(ptitle, psub);
       prog.append(pinfo);
-      const back = document.createElement('button');
-      back.className = 'btn btn-small'; back.type = 'button'; back.textContent = 'View';
-      back.onclick = ()=>showScreen('scr-rec');
-      prog.append(back);
+      // P73: hide View button during recovery — scr-rec shows fake 00:00:00 recording UI
+      // Progress is already visible here on the list.
+      if (!m.recovering){
+        const back = document.createElement('button');
+        back.className = 'btn btn-small'; back.type = 'button'; back.textContent = 'View';
+        back.onclick = ()=>showScreen('scr-rec');
+        prog.append(back);
+      }
       box.append(prog);
     }
   } catch(_){}
