@@ -1670,7 +1670,8 @@ async function renderList(){
     for (const t of items){
       if ((t.chunksTotal||0) > (t.chunksDone||0)) { incompleteIds.add(t.id); continue; }
       // Old transcript: compare checkpoint segments vs audio chunks
-      const cp = cps.find(c=>c.id===t.id);
+      // P72c: checkpoint store uses keyPath 'meetingId', not 'id'
+      const cp = cps.find(c=>(c.meetingId||c.id)===t.id);
       if (cp){
         const doneCount = Object.keys(cp.segmentsByChunk||{}).length;
         const audioCount = auds.filter(a=>a.meetingId===t.id).length;
