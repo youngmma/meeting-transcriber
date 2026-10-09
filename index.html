@@ -1881,7 +1881,9 @@ async function init(){
     try{
       const c = await caches.open('meeting-transcriber-whisper');
       const keys = await c.keys();
-      return keys.some(k=>k.url.includes('/'+modelId+'/'));
+      // P68: match modelId without requiring surrounding slashes — Transformers.js
+      // cache URLs vary in structure and the strict '/id/' pattern missed turbo.
+      return keys.some(k=>k.url.includes(modelId));
     }catch(_){ return false; }
   }
   async function deleteModelCache(modelId){
@@ -1890,7 +1892,7 @@ async function init(){
       const keys = await c.keys();
       let n = 0;
       for (const k of keys){
-        if (k.url.includes('/'+modelId+'/')){ await c.delete(k); n++; }
+        if (k.url.includes(modelId)){ await c.delete(k); n++; }
       }
       return n;
     }catch(_){ return 0; }
