@@ -320,7 +320,7 @@ if ('serviceWorker' in navigator) {
       <select id="langSelect">
         <option value="auto" selected>Auto-detect</option>
         <option value="en">English</option>
-        <option value="ko">Korean</option>
+        <option value="ko">Korean (한국어)</option>
       </select>
       <div class="muted" style="margin-top:6px">Pin to English for faster, more accurate English meetings.</div>
     </div>
@@ -338,6 +338,8 @@ if ('serviceWorker' in navigator) {
       <h2>Storage</h2>
       <div class="muted" id="storageInfo">Calculating…</div>
       <button class="btn btn-ghost btn-small" id="btnRefreshStorage" type="button" style="margin-top:8px">Refresh</button>
+      <button class="btn btn-ghost btn-small" id="btnFreeAudio" type="button" style="margin-top:8px;margin-left:8px">Delete all recordings</button>
+      <div class="muted" style="margin-top:6px">Frees space by deleting audio recordings. Transcripts are kept.</div>
     </div>
     <div class="card">
       <h2>Appearance</h2>
@@ -512,6 +514,12 @@ function download(name, text, mime){
   a.href = URL.createObjectURL(new Blob([text], {type:mime}));
   a.download = name; document.body.appendChild(a); a.click();
   setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 4000);
+}
+// C2: strip characters browsers mangle in filenames (":", "/", "\", …).
+// Same sanitization the Audio export already uses.
+function safeFilename(title, ext){
+  const base = String(title||'meeting').replace(/[^\w\- ]+/g,'').trim().slice(0,60) || 'meeting';
+  return base + ext;
 }
 function esc(s){ const d=document.createElement('div'); d.textContent=String(s??''); return d.innerHTML; }
 
@@ -1044,6 +1052,9 @@ const App = {
 
   async startRecording(){
     hideBanner('permErr');
+    // E2: clear any stale track-lost banner — it was never cleared, so a new
+    // recording would start with last session's error showing.
+    try { $('trackLostWarn').classList.remove('show'); } catch(_){}
     // UAT-9: synchronous re-entrancy guard — double-tap on Start (mobile/laggy UI)
     // used to race past the P1 guard (this.meeting not yet set) and show a confusing
     // "Another tab appears to be recording" dialog for the SAME tab.
@@ -1073,7 +1084,13 @@ const App = {
     // so background transcription of chunk 1 starts immediately at 5:00
     // instead of waiting for a 77MB download mid-recording.
     // P5: Pre-check model loading (non-blocking)
+    // B1: wire progress so the recording screen shows MB/percentage, not static text.
+    Engines._recDlProg = null;
+    Engines.onProgress = (eng, file, loaded, total)=>{
+      try{ Engines._recDlProg = { loaded:loaded||0, total:total||0 }; }catch(_){}
+    };
     Engines.ensureWhisperWorker().then(w=>{
+      Engines.onProgress = null; Engines._recDlProg = null; // B1: done
       if (!w){
         // Worker failed - warn user but don't block recording (P21)
         setTimeout(()=>{
@@ -1130,7 +1147,7 @@ const App = {
     await put('checkpoints', { meetingId:this.meeting.id, topic:this.meeting.topic,
       startedAt:this.meeting.startedAt, title:this.meeting.title,
       segmentsByChunk:{}, status:'recording' });
-    this.lastSound = Date.now(); this.silenceWarned = false; this._battWarned = false;
+    this.lastSound = Date.now(); this.silenceWarned = false; this._battWarned = false; this._fourHrWarned = false;
     this._chunkTimes = []; this._consecFails = 0; this._battMsg = null; this._battWarned = false; // P15/P8/P62: fresh per-meeting stats
     this._quotaWarned = false; this._lastQuotaCheck = 0; // Round 2 #6: fresh quota state
     try { $('storageFullWarn').classList.remove('show'); } catch(_){}
@@ -1154,6 +1171,12 @@ const App = {
         if (tp) tp.textContent = `⚠️ No sound for ${silMin} min — still recording. Stop manually if done.`;
       }
       // auto-stop at 4 hours
+      // UAT-26: warn at 3.5h so a long recording doesn't stop by surprise.
+      if (elapsed > 3.5*3600 && !this._fourHrWarned){
+        this._fourHrWarned = true;
+        const tp = $('txProg');
+        if (tp) tp.textContent = '⚠️ Recording will auto-stop at 4 hours (30 min left). Stop and start a new recording to continue.';
+      }
       if (elapsed > 4*3600) this.stopRecording();
     };
     AudioCap.onTrackLost = ()=>{
@@ -1264,9 +1287,13 @@ const App = {
     // If whisper model is still downloading, show that instead of a stuck "0/N chunks"
     if (!Engines.whisperWorkerReady && !Engines.whisperReady){
       const tp0 = $('txProg');
-      if (tp0) tp0.textContent = Engines._workerFailed
-        ? 'Transcription model failed to load — will retry automatically…'
-        : 'Downloading transcription model…';
+      if (tp0){
+        // B1: show live MB progress when available, not just static text.
+        const p = Engines._recDlProg;
+        tp0.textContent = Engines._workerFailed
+          ? 'Transcription model failed to load — will retry automatically…'
+          : (p && p.total ? `Downloading transcription model… ${Math.round(p.loaded/1048576)}MB / ${Math.round(p.total/1048576)}MB` : 'Downloading transcription model…');
+      }
       return;
     }
     const w = this.txWin; // {d, t} per-30s-window progress of the current chunk
@@ -1398,7 +1425,11 @@ const App = {
       const engByChunk = (cp && cp.enginesByChunk) || {};
       byChunk[chunkIndex] = labeled;
       engByChunk[chunkIndex] = engine;
-      await put('checkpoints', { ...(cp||{}), meetingId, segmentsByChunk:byChunk, enginesByChunk:engByChunk });
+      // UAT-23: clear any stale per-chunk error now that it transcribed fine,
+      // so the transcript note / Retry button don't linger after a recovery.
+      const errsOk = (cp && cp.transcribeErrors) || {};
+      if (errsOk[chunkIndex] !== undefined) delete errsOk[chunkIndex];
+      await put('checkpoints', { ...(cp||{}), meetingId, segmentsByChunk:byChunk, enginesByChunk:engByChunk, transcribeErrors:errsOk });
       this._consecFails = 0; // P8: reset on success
       // P15: record chunk time
       if (this._chunkStart){
@@ -1580,7 +1611,7 @@ const App = {
     try {
       const t = await get('transcripts', meetingId);
       if (t && t.segments && t.segments.length){
-        download(t.title+'.txt', txtOf(t), 'text/plain;charset=utf-8');
+        download(safeFilename(t.title, '.txt'), txtOf(t), 'text/plain;charset=utf-8');
         try { sessionStorage.setItem('mt-autodl', t.title); } catch(_){}
       }
     } catch(e){ console.warn('Auto-download failed', e); }
@@ -1629,7 +1660,18 @@ const App = {
       .sort((a,b)=>a.chunkIndex-b.chunkIndex);
     if (!auds.length && !Object.keys(cp.segmentsByChunk||{}).length){ alert('No audio to recover. The recording may have been deleted by retention policy.'); return; }
     const doneIdx = new Set(Object.keys(cp.segmentsByChunk||{}).map(Number));
-    for (const a of auds) if (!doneIdx.has(a.chunkIndex)) this.queue.push({meetingId, chunkIndex:a.chunkIndex});
+    const missing = auds.filter(a=>!doneIdx.has(a.chunkIndex));
+    // UAT-24: nothing to recover — don't run a futile cycle that ends with a
+    // misleading "Recovery done". Explain honestly instead.
+    if (!missing.length){
+      const errs = Object.values(cp.transcribeErrors||{}).map(String);
+      const lostAudio = errs.some(e=>/could not be saved|deleted by retention/i.test(e));
+      alert(lostAudio
+        ? 'Nothing to recover. Some audio was never saved (' + errs[0].slice(0,90) + '). The transcript already covers all saved audio.'
+        : 'Everything is already transcribed — nothing to recover.');
+      return;
+    }
+    for (const a of missing) this.queue.push({meetingId, chunkIndex:a.chunkIndex});
     this.meeting = { id:meetingId, chunksDone:doneIdx.size, chunksTotal:auds.length, recovering:true };
     this._chunkTimes = []; this._consecFails = 0; this._battMsg = null; this._battWarned = false; // Cycle 6/P62: reset per-recovery stats
     // UAT-11: reset language cache — it may hold a language detected from a DIFFERENT,
@@ -1780,6 +1822,12 @@ async function renderList(){
     const delBtn = document.createElement('button'); delBtn.className='btn btn-ghost btn-small';
     delBtn.type='button'; delBtn.textContent='Delete';
     delBtn.onclick = async ()=>{
+      // D1: never delete a transcript while its "Complete transcription" recovery
+      // is running — the in-flight chunk would re-create a ghost transcript.
+      if (typeof App!=='undefined' && App.meeting && App.meeting.recovering && App.meeting.id===t.id){
+        alert('Transcription recovery is running for this meeting — please wait until it finishes to delete.');
+        return;
+      }
       if (!confirm(`"${t.title}" Delete this transcript? (The recording will be deleted too.)`)) return;
       await del('transcripts', t.id);
       for (const a of (await all('audio')).filter(x=>x.meetingId===t.id))
@@ -1845,6 +1893,13 @@ async function openReader(id){
   $('readTitle').textContent = t.title;
   const dur = t.segments.length ? t.segments[t.segments.length-1].end : 0;
   $('readMeta').textContent = `${fmtClock(t.startedAt)} · ${t.segments.length} segments · about ${fmtDur(dur)}` + (t.engines ? ` · Engine: ${t.engines}` : '') + (t.note ? ` · ${t.note}` : '');
+  // C1: no segments → exporting would produce empty/title-only files. Disable
+  // the buttons with an honest tooltip instead of a confusing empty download.
+  const hasSegs = t.segments.length > 0;
+  for (const bid of ['btnDlTxt','btnDlSrt','btnCopyTx']){
+    const b = $(bid);
+    if (b){ b.disabled = !hasSegs; b.title = hasSegs ? '' : 'No segments to export'; }
+  }
   const box = $('segList'); box.innerHTML='';
   const auds = await all('audio');
   const hasAudio = auds.some(a=>a.meetingId===id);
@@ -1930,11 +1985,11 @@ async function init(){
   };
   $('btnDlTxt').onclick = async ()=>{
     const t = await get('transcripts', currentReadId); if(!t) return;
-    download(t.title+'.txt', txtOf(t), 'text/plain;charset=utf-8');
+    download(safeFilename(t.title, '.txt'), txtOf(t), 'text/plain;charset=utf-8');
   };
   $('btnDlSrt').onclick = async ()=>{
     const t = await get('transcripts', currentReadId); if(!t) return;
-    download(t.title+'.srt', toSRT(t.segments.map(s=>({start:s.start,end:s.end,text:`[${s.speaker}] ${s.text}`}))), 'text/plain;charset=utf-8');
+    download(safeFilename(t.title, '.srt'), toSRT(t.segments.map(s=>({start:s.start,end:s.end,text:`[${s.speaker}] ${s.text}`}))), 'text/plain;charset=utf-8');
   };
   // settings
   const st = await get('settings','audioPolicy');
@@ -1977,9 +2032,14 @@ async function init(){
     // P68b: trust the app's own download record first. The localStorage 'done'
     // marker is set on successful download and cleared on Delete, so it is the
     // most reliable signal. Cache URL matching is a fallback.
+    // UAT-21: a 'downloading' marker (active OR stale from reload/crash) means the
+    // download never completed — never trust URL matches in that case, or the
+    // badge/status note would report a partial model as downloaded.
     try{
       const key = modelId.replace(/[^a-z0-9]/gi,'');
-      if (localStorage.getItem('mt_dl_'+key) === 'done') return true;
+      const st = localStorage.getItem('mt_dl_'+key);
+      if (st === 'done') return true;
+      if (st === 'downloading') return false;
     }catch(_){}
     try{
       const c = await caches.open('meeting-transcriber-whisper');
@@ -2061,8 +2121,12 @@ async function init(){
         dl.onclick = async ()=>{
           // Round 2 (#12): downloading spins up a worker via resetWhisperWorker —
           // never do that while a transcription is running.
-          if (App.processing || (App.queue && App.queue.length)){
-            alert('Transcription is in progress — please wait until it finishes to download models.');
+          // A1: also block during RECORDING — resetWhisperWorker would kill the
+          // live transcription worker, and the P70 auto-refresh would fire
+          // mid-recording. Same condition the Delete guard uses (UAT-10).
+          if (App.processing || (App.queue && App.queue.length) ||
+              (App.meeting && !App.meeting.recovering)){
+            alert('A recording or transcription is in progress — please wait until it finishes to download models.');
             return;
           }
           const key = m.id.replace(/[^a-z0-9]/gi,'');
@@ -2115,7 +2179,10 @@ async function init(){
             try { localStorage.setItem('mt_dl_'+key, 'done'); } catch(_){}
             if (statEl) statEl.textContent = '✓ Downloaded';
             // P70: auto-refresh after download so badge and all state are clean
-            setTimeout(()=>{ window.location.reload(); }, 1000);
+            // UAT-22: skip the reload if the user started another download in the
+            // 1s window — reloading mid-download would orphan partial files.
+            // A1: also skip if a recording/recovery session is active.
+            setTimeout(()=>{ try{ if (typeof App!=='undefined' && (App._dlActive || App.meeting)) return; }catch(_){} window.location.reload(); }, 1000);
           }catch(e){
             try { localStorage.removeItem('mt_dl_'+key); } catch(_){}
             if (cancelled){
@@ -2175,6 +2242,14 @@ async function init(){
     // Round 2 (#12): never kill the transcription worker mid-session.
     if ((App.processing || (App.queue && App.queue.length)) && Engines.whisperModel !== modelId){
       alert('Transcription is in progress — please wait until it finishes to switch models.');
+      renderModelList(); // restore radio to the active model
+      return;
+    }
+    // A1: never switch models mid-recording — it would reset the worker and,
+    // for an undownloaded model, trigger an auto-download + P70 page refresh
+    // in the middle of the user's recording.
+    if (App.meeting && !App.meeting.recovering && Engines.whisperModel !== modelId){
+      alert('A recording is in progress — please wait until it finishes to switch models.');
       renderModelList(); // restore radio to the active model
       return;
     }
@@ -2242,7 +2317,10 @@ async function init(){
         try { localStorage.setItem('mt_dl_'+key, 'done'); } catch(_){}
         if (statEl) statEl.textContent = '✓ Downloaded';
         // P70: auto-refresh after download so badge and all state are clean
-        setTimeout(()=>{ window.location.reload(); }, 1000);
+        // UAT-22: skip the reload if the user started another download in the
+        // 1s window — reloading mid-download would orphan partial files.
+        // A1: also skip if a recording/recovery session is active.
+        setTimeout(()=>{ try{ if (typeof App!=='undefined' && (App._dlActive || App.meeting)) return; }catch(_){} window.location.reload(); }, 1000);
       }catch(e){
         try { localStorage.removeItem('mt_dl_'+key); } catch(_){}
         if (String((e&&e.message)||e).includes('cancelled')){
@@ -2324,6 +2402,25 @@ async function init(){
   }
   window.updateStorageInfo = updateStorageInfo;
   $('btnRefreshStorage').onclick = updateStorageInfo;
+  // UAT-25: give the storage-full guidance an actual action — the recording
+  // banner points here, but there was no way to free space.
+  $('btnFreeAudio').onclick = async ()=>{
+    const auds = await all('audio');
+    if (!auds.length){ alert('No recordings stored.'); return; }
+    // Keep audio for in-progress / incomplete meetings (needed for retry).
+    let liveIds = new Set();
+    try {
+      const cps = await all('checkpoints');
+      for (const c of cps) if (c.status === 'recording') liveIds.add(c.meetingId || c.id);
+      if (App.meeting) liveIds.add(App.meeting.id);
+    } catch(_){}
+    const deletable = auds.filter(a=>!liveIds.has(a.meetingId));
+    if (!deletable.length){ alert('Only recordings for in-progress meetings exist — nothing safe to delete.'); return; }
+    if (!confirm(`Delete ${deletable.length} stored recording chunk(s)? Transcripts are kept.`)) return;
+    for (const a of deletable) await del('audio', [a.meetingId, a.chunkIndex]);
+    updateStorageInfo();
+    alert('Recordings deleted. Transcripts kept.');
+  };
   updateStorageInfo();
   // Engine badge on main header (backend + model)
   updateEngineBadge = async function(){
@@ -2515,12 +2612,14 @@ async function init(){
       if (document.hidden){
         hiddenAt = Date.now();
         try { queueLenAtHide = (App.queue && App.queue.length) || 0; } catch(_){ queueLenAtHide = 0; }
-      } else if (hiddenAt && Date.now() - hiddenAt > 60000){
-        hiddenAt = 0;
-        // LC-03: OS releases the wake lock while hidden — re-acquire if session still active
+      } else {
+        // E1: OS releases the wake lock while hidden — re-acquire on EVERY return
+        // to visible while a session is active, not just after >60s hides.
         try {
           if ((App.meeting || App.processing) && typeof App._requestWakeLock === 'function') App._requestWakeLock();
         } catch(_){}
+        if (hiddenAt && Date.now() - hiddenAt > 60000){
+        hiddenAt = 0;
         // Was something active? Check for in-progress meeting or non-empty queue
         const active = (App.meeting) || (App.queue && App.queue.length);
         if (active){
@@ -2542,6 +2641,7 @@ async function init(){
       } else {
         hiddenAt = 0;
       }
+      } // end E1 outer else (visible)
     });
   })();
   // request storage persistence (prevent eviction)
