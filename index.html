@@ -287,6 +287,7 @@ if ('serviceWorker' in navigator) {
         <button class="btn btn-ghost btn-small" id="btnDlTxt" type="button" title="Plain text with timestamps — easy to read and share">Download txt</button>
         <button class="btn btn-ghost btn-small" id="btnDlSrt" type="button" title="Subtitle file — for video players and editors">Download srt</button>
         <button class="btn btn-ghost btn-small" id="btnCopyTx" type="button" title="Copy the full transcript to clipboard">Copy</button>
+        <button class="btn btn-ghost btn-small" id="btnShareTx" type="button" title="Share the transcript via your device's share sheet">Share</button>
         <button class="btn btn-ghost btn-small" id="btnBack" type="button">Back to list</button>
       </div>
     </div>
@@ -1812,7 +1813,7 @@ async function openReader(id){
   const dur = t.segments.length ? t.segments[t.segments.length-1].end : 0;
   $('readMeta').textContent = `${fmtClock(t.startedAt)} · ${t.segments.length} segments · about ${fmtDur(dur)}` + (t.engines ? ` · Engine: ${t.engines}` : '') + (t.note ? ` · ${t.note}` : '');
   const hasSegs = t.segments.length > 0;
-  for (const bid of ['btnDlTxt','btnDlSrt','btnCopyTx']){
+  for (const bid of ['btnDlTxt','btnDlSrt','btnCopyTx','btnShareTx']){
     const b = $(bid);
     if (b){ b.disabled = !hasSegs; b.title = hasSegs ? '' : 'No segments to export'; }
   }
@@ -1822,9 +1823,24 @@ async function openReader(id){
   for (let i=0; i<t.segments.length; i++){
     const s = t.segments[i];
     const div = document.createElement('div'); div.className='seg';
-    const spk = document.createElement('span');
+    const spk = document.createElement('button');
+    spk.type = 'button';
     spk.className = 'spk ' + (s.speaker==='Me'?'me':s.speaker==='Other'?'them':'unk');
     spk.textContent = s.speaker;
+    spk.title = 'Tap to change speaker (Me / Other / Unknown)';
+    // UAT-54: speaker labels are heuristic-based and can be wrong — let user correct them
+    spk.onclick = async ()=>{
+      const order = ['Me','Other','Unknown'];
+      const next = order[(order.indexOf(s.speaker)+1) % order.length] || 'Me';
+      const tt = await get('transcripts', id);
+      if (tt && tt.segments[i]){
+        tt.segments[i].speaker = next;
+        await put('transcripts', tt);
+        s.speaker = next;
+        spk.textContent = next;
+        spk.className = 'spk ' + (next==='Me'?'me':next==='Other'?'them':'unk');
+      }
+    };
     const ts = document.createElement('button'); ts.className='ts'; ts.type='button';
     ts.textContent = srtTimestamp(s.start).slice(0,8);
     ts.disabled = !hasAudio;
@@ -1920,6 +1936,22 @@ async function init(){
   $('btnDlSrt').onclick = async ()=>{
     const t = await get('transcripts', currentReadId); if(!t) return;
     download(safeFilename(t.title, '.srt'), toSRT(t.segments.map(s=>({start:s.start,end:s.end,text:`[${s.speaker}] ${s.text}`}))), 'text/plain;charset=utf-8');
+  };
+  // UAT-55: native share sheet — fastest path to send transcript on mobile
+  $('btnShareTx').onclick = async ()=>{
+    const t = await get('transcripts', currentReadId); if(!t) return;
+    const txt = typeof txtOf === 'function' ? txtOf(t) : t.segments.map(s=>s.text).join('\n');
+    if (navigator.share){
+      try {
+        await navigator.share({ title: t.title, text: txt });
+      } catch(_){ /* user dismissed — no error needed */ }
+    } else {
+      // Desktop fallback: copy to clipboard
+      try {
+        await navigator.clipboard.writeText(txt);
+        alert('Share is not supported on this device — transcript copied to clipboard instead.');
+      } catch(_){ alert('Copy failed. Try selecting the transcript text manually.'); }
+    }
   };
   // settings
   const st = await get('settings','audioPolicy');
