@@ -366,7 +366,7 @@ return wr; }
 catch(e){ console.warn('Worker init failed, falling back to main thread:', e);
 if (this._workerGen === gen){
 try{ w.terminate(); }catch(_){} this._worker=null;
-this._workerReady = null; this._workerFailed = true;
+this._workerReady = null; this._workerFailed = true; this.whisperWorkerReady = false; this._activeModel = null; this._activeDevice = null;
 }
 return null; }
 })();
@@ -409,7 +409,7 @@ return new Promise((res, rej)=>{
 let settled = false;
 const done = (fn, v)=>{ if(!settled){ settled=true; clearTimeout(to); clearInterval(live); w.removeEventListener('message',h); w.removeEventListener('error',herr2); fn(v); } };
 const to = setTimeout(()=>{
-if (this._worker === myWorker && this._workerGen === myGen){ this._workerReady = null; }
+if (this._worker === myWorker && this._workerGen === myGen){ this._workerReady = null; this.whisperWorkerReady = false; this._activeModel = null; this._activeDevice = null; }
 done(rej, new Error('transcription timeout: worker unresponsive (10 min)'));
 }, 600000);
 const live = setInterval(()=>{
@@ -418,7 +418,7 @@ done(rej, new Error('worker replaced mid-transcription'));
 }
 }, 2000);
 const herr2 = ()=>{
-if (this._worker === myWorker && this._workerGen === myGen){ this._workerReady = null; }
+if (this._worker === myWorker && this._workerGen === myGen){ this._workerReady = null; this.whisperWorkerReady = false; this._activeModel = null; this._activeDevice = null; }
 done(rej, new Error('worker crashed mid-transcription (possibly out of memory)'));
 };
 const h = (e)=>{
@@ -426,7 +426,7 @@ const m = e.data||{};
 if (m.id!==id) return;
 if (m.type==='done'){ done(res, m.chunks||[]); }
 else if (m.type==='error'){
-if (this._worker === myWorker && this._workerGen === myGen){ this._workerReady = null; }
+if (this._worker === myWorker && this._workerGen === myGen){ this._workerReady = null; this.whisperWorkerReady = false; this._activeModel = null; this._activeDevice = null; }
 done(rej, new Error(m.message));
 }
 };
