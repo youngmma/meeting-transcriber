@@ -496,7 +496,6 @@ function safeFilename(title, ext){
   const base = String(title||'meeting').replace(/[^\p{L}\p{N}\- ]+/gu,'').trim().slice(0,60) || 'meeting';
   return base + ext;
 }
-function esc(s){ const d=document.createElement('div'); d.textContent=String(s??''); return d.innerHTML; }
 
 /* ============ IndexedDB ============ */
 const DB='meeting-transcriber', DBV=1;
@@ -1790,7 +1789,7 @@ async function renderList(){
         const blob = new Blob(auds.map(a=>a.blob), { type: auds[0].blob.type || 'audio/webm' });
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
-        a.download = (t.title||'meeting').replace(/[^\w\- ]+/g,'').trim().slice(0,40) + '.webm';
+        a.download = safeFilename(t.title, '.webm');
         document.body.appendChild(a); a.click();
         setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 4000);
       } catch(e){ alert('Could not export audio: ' + String((e&&e.message)||e).slice(0,100)); }
