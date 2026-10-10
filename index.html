@@ -1798,7 +1798,7 @@ async function renderList(){
     if (t.segments && t.segments.length){
       const pv = document.createElement('div'); pv.className='sub';
       pv.style.cssText = 'font-size:12px;opacity:.85;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%';
-      const firstTx = (t.segments[0].text||'').trim();
+      let firstTx='';for(const sg of t.segments){const tx2=(sg.text||'').trim();if(tx2){firstTx=tx2;break;}}
       pv.textContent = firstTx.length > 90 ? firstTx.slice(0,90)+'…' : firstTx;
       pv.title = firstTx;
       info.append(pv);
