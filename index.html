@@ -1731,7 +1731,12 @@ async function renderList(){
       box.append(prog);
     }
   } catch(_){}
-  if (!items.length && !box.children.length){ box.innerHTML = '<div class="muted">No transcripts yet.</div>'; return; }
+  if (!items.length && !box.children.length){
+    box.innerHTML = q
+      ? '<div class="muted">No transcripts match your search.</div>'
+      : '<div class="muted">No transcripts yet.</div>';
+    return;
+  }
   for (const t of items){
     const row = document.createElement('div'); row.className='meet-item';
     const info = document.createElement('div'); info.className='t';
@@ -2274,13 +2279,19 @@ async function init(){
     const auds = await all('audio');
     if (!auds.length){ alert('No recordings stored.'); return; }
     let liveIds = new Set();
+    let guardOk = false;
     try {
       const cps = await all('checkpoints');
       for (const c of cps) if (c.status === 'recording') liveIds.add(c.meetingId || c.id);
       if (App.meeting) liveIds.add(App.meeting.id);
       const ts = await all('transcripts');
       for (const t of ts) if ((t.chunksTotal||0) > (t.chunksDone||0)) liveIds.add(t.id);
+      guardOk = true;
     } catch(_){}
+    if (!guardOk){
+      alert('Could not verify which recordings are safe to delete. Please try again — nothing was deleted.');
+      return;
+    }
     const deletable = auds.filter(a=>!liveIds.has(a.meetingId));
     if (!deletable.length){ alert('Only recordings for in-progress meetings exist — nothing safe to delete.'); return; }
     if (!confirm(`Delete ${deletable.length} stored recording chunk(s)? Transcripts are kept.`)) return;
