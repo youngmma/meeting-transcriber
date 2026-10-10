@@ -1231,7 +1231,29 @@ try { await App.checkRecovery(); } catch(_){}
 return;
 }
 } catch(_){}
+// UAT-95: check the cross-tab recovery flag — another tab may be recovering
+// this meeting right now. Discarding mid-recovery would delete audio out
+// from under the recovering tab, corrupting its transcript.
+try {
+const _rv = localStorage.getItem('mt_recovering_' + cp.meetingId);
+if (_rv && Date.now() - Number(_rv) < 5*60*1000){
+alert('Recovery is already running in another tab. Please wait for it to finish.');
+try { await App.checkRecovery(); } catch(_){}
+return;
+}
+} catch(_){}
 if (!confirm('Discard the interrupted recording? Saved audio will be deleted too.')) return;
+// UAT-96: re-check the flag AFTER the confirm — another tab may have started
+// recovery while the dialog was open. Discarding now would delete audio out
+// from under the recovering tab, corrupting its transcript.
+try {
+const _rv2 = localStorage.getItem('mt_recovering_' + cp.meetingId);
+if (_rv2 && Date.now() - Number(_rv2) < 5*60*1000){
+alert('Recovery is already running in another tab. Please wait for it to finish.');
+try { await App.checkRecovery(); } catch(_){}
+return;
+}
+} catch(_){}
 await put('checkpoints', { ...cp, status:'abandoned' });
 for (const a of auds) await del('audio',[a.meetingId,a.chunkIndex]);
 card.style.display='none';
@@ -1535,7 +1557,29 @@ if (typeof App!=='undefined' && App.meeting && App.meeting.recovering && App.mee
 alert('Transcription recovery is running for this meeting — please wait until it finishes to delete.');
 return;
 }
+// UAT-98: same-tab check above misses recovery running in ANOTHER tab.
+// Check the cross-tab recovery flag — deleting mid-recovery would pull audio
+// out from under the recovering tab, corrupting its transcript.
+const _recKey = 'mt_recovering_' + t.id;
+try {
+const _rv = localStorage.getItem(_recKey);
+if (_rv && Date.now() - Number(_rv) < 5*60*1000){
+alert('Recovery is already running in another tab. Please wait for it to finish.');
+try { renderList(); } catch(_){}
+return;
+}
+} catch(_){}
 if (!confirm(`"${t.title||'(untitled)'}" Delete this transcript? (The recording will be deleted too.) This cannot be undone.`)) return;
+// UAT-96 pattern: re-check AFTER the confirm — another tab may have started
+// recovery while the dialog was open.
+try {
+const _rv2 = localStorage.getItem(_recKey);
+if (_rv2 && Date.now() - Number(_rv2) < 5*60*1000){
+alert('Recovery is already running in another tab. Please wait for it to finish.');
+try { renderList(); } catch(_){}
+return;
+}
+} catch(_){}
 await del('transcripts', t.id);
 for (const a of (await all('audio')).filter(x=>x.meetingId===t.id))
 await del('audio',[a.meetingId,a.chunkIndex]);
@@ -2322,6 +2366,12 @@ if (e.key && e.key.indexOf('mt_dl_') === 0){
 if (typeof updateEngineBadge === 'function') updateEngineBadge();
 try { if (typeof updateModelStatusNote === 'function') updateModelStatusNote(); } catch(_){}
 try { if (typeof renderModelList === 'function') renderModelList(); } catch(_){}
+}
+// UAT-97: cross-tab recovery flag changed (another tab started/finished
+// recovery) — refresh the recovery card so a stale "Interrupted recording"
+// card doesn't linger in this tab after the other tab finished.
+if (e.key && e.key.indexOf('mt_recovering_') === 0){
+try { App.checkRecovery().catch(()=>{}); } catch(_){}
 }
 } catch(_){}
 });
