@@ -1944,7 +1944,7 @@ if (App._dlActive === key) renderModelList();
 else alert('A model download is in progress — please wait until it finishes.');
 return;
 }
-if (!confirm(`Download the ${m.name} model (${m.size})?\n\nOn mobile data this uses significant data. Wi-Fi recommended.`)) return;
+
 try {
 var _fi = _dlFlagInfo(key);
 if (_fi.fresh && !_fi.mine){
@@ -2090,7 +2090,7 @@ return;
 // UAT-109: mobile-data confirm (parity with manual Download button)
 var _sm = null;
 try { _sm = MODELS.find(function(m){ return m.id === modelId; }); } catch(_){}
-if (_sm && !confirm('Download the ' + _sm.name + ' model (' + _sm.size + ')?\n\nOn mobile data this uses significant data. Wi-Fi recommended.')){
+if (_sm){
 try { renderModelList(); } catch(_){}
 return;
 }
