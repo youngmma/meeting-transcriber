@@ -1500,9 +1500,9 @@ catch(e){ alert('Could not open transcript — browser storage error. Try reload
 if (!t || !Array.isArray(t.segments)){ alert('This transcript appears to be corrupted and cannot be displayed. You can delete it from the list.'); return; }
 try { App._listScrollY = window.scrollY || 0; } catch(_){}
 currentReadId = id;
-$('readTitle').textContent = t.title;
+$('readTitle').textContent = t.title||'(untitled)';
 const dur = t.segments.length ? t.segments[t.segments.length-1].end : 0;
-$('readMeta').textContent = `${fmtClock(t.startedAt)} · ${t.segments.length} segments · about ${fmtDur(dur)}` + (t.engines ? ` · Engine: ${t.engines}` : '') + (t.note ? ` · ${t.note}` : '');
+$('readMeta').textContent = `${t.startedAt?fmtClock(t.startedAt):'date unknown'} · ${t.segments.length} segments · about ${fmtDur(dur)}` + (t.engines ? ` · Engine: ${t.engines}` : '') + (t.note ? ` · ${t.note}` : '');
 const hasSegs = t.segments.length > 0;
 for (const bid of ['btnDlTxt','btnDlSrt','btnCopyTx','btnShareTx']){
 const b = $(bid);
@@ -2160,6 +2160,12 @@ dm.textContent = mem ? `Device memory: ~${mem}GB` : 'Device memory: unknown';
 }
 })();
 $('btnWipe').onclick = async ()=>{
+try {
+if ((typeof App !== 'undefined') && (App.meeting || App.processing || (App.queue && App.queue.length) || App._dlActive)){
+alert('A recording, transcription, or download is in progress. Please wait for it to finish before deleting all data.');
+return;
+}
+} catch(_){}
 if (!confirm('Delete all transcripts, recordings, and settings? Models will be kept. This cannot be undone.')) return;
 try {
 for (const s of ['transcripts','audio','checkpoints','settings']) await clearStore(s);
