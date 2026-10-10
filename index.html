@@ -1429,6 +1429,12 @@ function showScreen(id){
 document.querySelectorAll('.screen').forEach(s=>s.classList.toggle('active', s.id===id));
 window.scrollTo(0,0);
 try {
+if (id === 'scr-start'){
+if (typeof updateEngineBadge === 'function') updateEngineBadge();
+if (typeof updateModelStatusNote === 'function') updateModelStatusNote();
+}
+} catch(_){}
+try {
 if (id !== 'scr-read' && typeof App !== 'undefined') App.stopSegAudio();
 } catch(_){}
 try {
@@ -1829,6 +1835,18 @@ else txt = 'Downloading in another tab…';
 }
 } catch(_){}
 el.textContent = txt;
+try {
+const key2 = m.id.replace(/[^a-z0-9]/gi,'');
+const dlActive = (typeof App !== 'undefined' && App._dlActive === key2);
+if (cached && !dlActive){
+const row = el.closest ? el.closest('div') : null;
+const container = row && row.parentElement ? row.parentElement : null;
+if (container){
+const btn = container.querySelector('button');
+if (btn && btn.textContent === 'Download') btn.remove();
+}
+}
+} catch(_){}
 }
 }
 function _dlFlagInfo(key){
