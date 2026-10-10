@@ -1423,7 +1423,7 @@ return;
 for (const t of items){
 const row = document.createElement('div'); row.className='meet-item';
 const info = document.createElement('div'); info.className='t';
-const ttl = document.createElement('div'); ttl.className='title'; ttl.textContent=t.title;
+const ttl = document.createElement('div'); ttl.className='title'; ttl.textContent=t.title||'(untitled)';
 const sub = document.createElement('div'); sub.className='sub';
 const dur = t.segments&&t.segments.length ? t.segments[t.segments.length-1].end : 0;
 sub.textContent = `${t.segCount||0} segments · about ${fmtDur(dur)}` + (t.note ? ` · ${t.note}` : '');
@@ -1446,7 +1446,7 @@ if (typeof App!=='undefined' && App.meeting && App.meeting.recovering && App.mee
 alert('Transcription recovery is running for this meeting — please wait until it finishes to delete.');
 return;
 }
-if (!confirm(`"${t.title}" Delete this transcript? (The recording will be deleted too.)`)) return;
+if (!confirm(`"${t.title||'(untitled)'}" Delete this transcript? (The recording will be deleted too.)`)) return;
 await del('transcripts', t.id);
 for (const a of (await all('audio')).filter(x=>x.meetingId===t.id))
 await del('audio',[a.meetingId,a.chunkIndex]);
@@ -2161,8 +2161,14 @@ dm.textContent = mem ? `Device memory: ~${mem}GB` : 'Device memory: unknown';
 })();
 $('btnWipe').onclick = async ()=>{
 if (!confirm('Delete all transcripts, recordings, and settings? Models will be kept. This cannot be undone.')) return;
+try {
 for (const s of ['transcripts','audio','checkpoints','settings']) await clearStore(s);
-alert('Deleted.'); showScreen('scr-list'); renderList();
+} catch(e){
+alert('Delete failed partway: ' + String((e&&e.message)||e).slice(0,100) + '\n\nSome data may remain. Try again or reload the page.');
+return;
+}
+alert('Deleted. The page will now reload for a fresh start.');
+location.reload();
 };
 $('btnBackup').onclick = async ()=>{
 try {
