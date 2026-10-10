@@ -1224,7 +1224,9 @@ $('btnAbandon').onclick = async ()=>{
 try {
 const fresh = await get('checkpoints', cp.meetingId);
 if (fresh && fresh.lastBeat && Date.now() - fresh.lastBeat < 90000){
-alert('This recording appears to be active in another tab. Please stop it there first.');
+// UAT-94: name the recording's start time so the user can tell WHICH tab.
+const _when = fresh.startedAt ? new Date(fresh.startedAt).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'}) : '';
+alert('This recording appears to be active in another tab' + (_when ? ' (started ' + _when + ')' : '') + '. Please stop it there first.');
 try { await App.checkRecovery(); } catch(_){}
 return;
 }
@@ -1259,7 +1261,9 @@ if (!cp) return;
 try {
 const freshCp = await get('checkpoints', meetingId);
 if (freshCp && freshCp.lastBeat && Date.now() - freshCp.lastBeat < 90000){
-alert('This recording appears to be active in another tab. Please stop it there first.');
+// UAT-94: name the recording's start time so the user can tell WHICH tab.
+const _when2 = freshCp.startedAt ? new Date(freshCp.startedAt).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'}) : '';
+alert('This recording appears to be active in another tab' + (_when2 ? ' (started ' + _when2 + ')' : '') + '. Please stop it there first.');
 return;
 }
 } catch(_){}
@@ -1283,7 +1287,9 @@ alert(lostAudio
 : 'Everything is already transcribed — nothing to recover.');
 return;
 }
-for (const a of missing) this.queue.push({meetingId, chunkIndex:a.chunkIndex});
+// UAT-92: flag check BEFORE queue push — a blocked recovery must leave
+// no side effects. Stale queue items would otherwise be transcribed later
+// during an unrelated recording (pumpQueue drains the shared queue).
 // UAT-91: cross-tab double-recovery guard. Two tabs open on the same crashed
 // checkpoint would otherwise both transcribe it (duplicate work, double
 // "Recovery done" alerts, double txt auto-downloads). localStorage is
@@ -1298,6 +1304,7 @@ return;
 }
 localStorage.setItem(_recFlag, String(Date.now()));
 } catch(_){}
+for (const a of missing) this.queue.push({meetingId, chunkIndex:a.chunkIndex});
 this.meeting = { id:meetingId, chunksDone:doneIdx.size, chunksTotal:auds.length, recovering:true };
 this._chunkTimes = []; this._consecFails = 0; this._battMsg = null; this._battWarned = false; this._silenceMsg = null; this._fourHrMsg = null; // Cycle 6/P62/UAT-42: reset per-recovery stats
 Engines._sessionLang = null;
@@ -1306,11 +1313,18 @@ $('btnRecover').disabled = true; $('btnAbandon').disabled = true;
 $('recoveryInfo').textContent = `${cp.title} — transcribing…`;
 }
 let recErr = null;
+// UAT-93: keep the cross-tab recovery flag fresh while this recovery runs.
+// A long recovery (12 chunks ≈ 12+ min) outlasts the 5-min staleness, which
+// would let a second tab start a duplicate recovery. Refresh every 60s; if
+// this tab crashes, refreshes stop and the flag goes stale in 5 min so
+// another tab can take over.
+const _flagTimer = setInterval(()=>{ try{ localStorage.setItem(_recFlag, String(Date.now())); }catch(_){} }, 60000);
 try {
 await this.pumpQueue();
 await this.finalize(meetingId);
 } catch(e){ recErr = e; }
 finally {
+clearInterval(_flagTimer);
 this.meeting = null;
 try { localStorage.removeItem('mt_recovering_' + meetingId); } catch(_){} // UAT-91: release double-recovery guard
 if (card){ card.style.display='none'; $('btnRecover').disabled = false; $('btnAbandon').disabled = false; }
