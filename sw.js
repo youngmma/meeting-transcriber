@@ -13,7 +13,7 @@
  * old cache during activate.
  */
 
-const APP_VERSION = '1.0.75';
+const APP_VERSION = '1.0.76';
 const SHELL_CACHE = `app-shell-${APP_VERSION}`;
 const RUNTIME_CACHE = `app-runtime-${APP_VERSION}`;
 
@@ -31,7 +31,9 @@ const SHELL_ASSET_PATHS = new Set(
 );
 
 // version-pinned CDN assets (immutable → cache-first is safe)
-const CDN_PREFIXES = [];
+// UAT-35: the transformers runtime library must work offline — without this,
+// airplane mode breaks transcription even when models are downloaded.
+const CDN_PREFIXES = ['https://cdn.jsdelivr.net/npm/@huggingface/transformers@'];
 const isCdnAsset = (url) => CDN_PREFIXES.some((prefix) => url.startsWith(prefix));
 
 self.addEventListener('install', (event) => {
