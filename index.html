@@ -368,7 +368,7 @@ if ('serviceWorker' in navigator) {
 </script>
 <script type="module">
 'use strict';
-/* ============ utils (same behavior as TDD-verified logic) ============ */
+
 let updateEngineBadge = null;
 let updateModelStatusNote = null;
 let refreshModelStatus = null;
@@ -498,7 +498,7 @@ function safeFilename(title, ext){
   return base + ext;
 }
 
-/* ============ IndexedDB ============ */
+
 const DB='meeting-transcriber', DBV=1;
 let dbp=null;
 function db(){
@@ -552,7 +552,7 @@ async function clearStore(store){
   });
 }
 
-/* ============ audio capture pipeline ============ */
+
 const CHUNK_SEC = 300; // 5-minute chunks
 const AudioCap = {
   ctx:null, displayStream:null, micStream:null, mixedDest:null,
@@ -680,7 +680,7 @@ const AudioCap = {
   }
 };
 
-/* ============ transcription engines ============ */
+
 const Engines = {
   whisper:null, whisperReady:false, whisperWorkerReady:false,
   whisperCached:false, // files cached (installed). Session is created at transcription time
@@ -936,7 +936,7 @@ function groupWords(words){
   return filterHallucinations(segs);
 }
 
-/* ============ recording session + transcription queue ============ */
+
 const App = {
   meeting:null, queue:[], processing:false, lastSound:0, silenceWarned:false,
   audioEl:null, silenceTimeoutMin:10,
@@ -1667,7 +1667,7 @@ const App = {
   },
 };
 
-/* ============ UI ============ */
+
 function applyTheme(theme){
   const htmlEl = document.documentElement;
   if (!theme || theme==='system') htmlEl.removeAttribute('data-theme');
@@ -1795,6 +1795,14 @@ async function renderList(){
     const dur = t.segments&&t.segments.length ? t.segments[t.segments.length-1].end : 0;
     sub.textContent = `${t.segCount||0} segments · about ${fmtDur(dur)}` + (t.note ? ` · ${t.note}` : '');
     info.append(ttl, sub);
+    if (t.segments && t.segments.length){
+      const pv = document.createElement('div'); pv.className='sub';
+      pv.style.cssText = 'font-size:12px;opacity:.85;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%';
+      const firstTx = (t.segments[0].text||'').trim();
+      pv.textContent = firstTx.length > 90 ? firstTx.slice(0,90)+'…' : firstTx;
+      pv.title = firstTx;
+      info.append(pv);
+    }
     const open = document.createElement('button'); open.className='btn btn-ghost btn-small';
     open.type='button'; open.textContent='Read';
     open.onclick = ()=>openReader(t.id);
@@ -2123,10 +2131,11 @@ async function init(){
           }
           const key = m.id.replace(/[^a-z0-9]/gi,'');
           if (App._dlActive){
-            if (App._dlActive === key) renderModelList(); // refresh to proper Downloading… state
+            if (App._dlActive === key) renderModelList();
             else alert('A model download is in progress — please wait until it finishes.');
             return;
           }
+          if (!confirm(`Download the ${m.name} model (${m.size})?\n\nOn mobile data this uses significant data. Wi-Fi recommended.`)) return;
           App._dlActive = key;
           try { localStorage.setItem('mt_dl_'+key, 'downloading'); } catch(_){}
           const statEl = document.getElementById('mstat-'+key);
