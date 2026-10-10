@@ -561,7 +561,13 @@ meeting:null, queue:[], processing:false, lastSound:0, silenceWarned:false,
 audioEl:null, silenceTimeoutMin:10,
 _tabId: (function(){ try {
 var _id = sessionStorage.getItem('mt_tabid');
-if (!_id){ _id = 'tab-' + Math.random().toString(36).slice(2, 10); try { sessionStorage.setItem('mt_tabid', _id); } catch(_){} }
+var _nav = '';
+try { var _ne = performance.getEntriesByType('navigation')[0]; _nav = _ne ? _ne.type : ''; } catch(_){}
+// UAT-111: a duplicated/restored tab copies sessionStorage AND reports navigation
+// type 'navigate'. That is a new tab instance, not a reload — regenerate so it
+// cannot misread another tab's download flag as its own. Reloads ('reload') and
+// back/forward keep the persisted id (UAT-106).
+if (!_id || _nav === 'navigate'){ _id = 'tab-' + Math.random().toString(36).slice(2, 10); try { sessionStorage.setItem('mt_tabid', _id); } catch(_){} }
 return _id;
 } catch(_){ return 'tab-' + Math.random().toString(36).slice(2, 10); } })(),
 _bc: null,
@@ -2261,6 +2267,14 @@ let downloaded = true;
 try {
 if (mid && typeof isModelCached === 'function'){
 downloaded = await isModelCached(mid);
+}
+} catch(_){}
+// UAT-112: if the worker is actively running the selected model, it is downloaded
+// by definition — a fresh download flag from another tab must not flip the badge
+// to "no model downloaded" mid-recording.
+try {
+if (!downloaded && mid && Engines && Engines.whisperWorkerReady && Engines._activeModel){
+if (shortOf(String(Engines._activeModel)) === mshort && mshort) downloaded = true;
 }
 } catch(_){}
 if (mshort && !downloaded){
