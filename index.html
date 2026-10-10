@@ -1827,18 +1827,30 @@ if (!el) continue;
 let incomplete = false;
 try {
 const key = m.id.replace(/[^a-z0-9]/gi,'');
-incomplete = localStorage.getItem('mt_dl_'+key) === 'downloading';
+incomplete = _dlFresh(key);
 } catch(_){}
 el.textContent = incomplete ? '⚠️ Incomplete download — please re-download'
 : cached ? '✓ Downloaded' : 'Not downloaded';
 }
+}
+// UAT-104: download flag was plain 'downloading' (no timestamp) — a crash
+// left it stuck, permanently blocking re-download/delete/wipe. Now a
+// timestamp, refreshed every 60s (UAT-93 pattern); stale after 5 min.
+function _dlFresh(key){
+try {
+const v = localStorage.getItem('mt_dl_'+key);
+if (!v || v === 'done') return false;
+const t = Number(v);
+if (isNaN(t)) return false;
+return Date.now() - t < 5*60*1000;
+} catch(_){ return false; }
 }
 async function isModelCached(modelId){
 try{
 const key = modelId.replace(/[^a-z0-9]/gi,'');
 const st = localStorage.getItem('mt_dl_'+key);
 if (st === 'done') return true;
-if (st === 'downloading') return false;
+if (_dlFresh(key)) return false;
 }catch(_){}
 try{
 const c = await caches.open('meeting-transcriber-whisper');
@@ -1878,8 +1890,7 @@ const key = m.id.replace(/[^a-z0-9]/gi,'');
 let cached = await isModelCached(m.id);
 let incomplete = false;
 try {
-const dlState = localStorage.getItem('mt_dl_'+key);
-if (dlState === 'downloading'){
+if (_dlFresh(key)){
 incomplete = true;
 cached = false; // treat as not downloaded
 }
@@ -1922,15 +1933,17 @@ if (!confirm(`Download the ${m.name} model (${m.size})?\n\nOn mobile data this u
 // so check the cross-tab localStorage flag too. Starting a second download
 // would fight over the worker and cause "worker replaced" chunk failures.
 try {
-const _dl = localStorage.getItem('mt_dl_'+key);
-if (_dl === 'downloading'){
+if (_dlFresh(key)){
 alert('A model download is already in progress in another tab — please wait until it finishes.');
 try { renderModelList(); } catch(_){}
 return;
 }
 } catch(_){}
 App._dlActive = key;
-try { localStorage.setItem('mt_dl_'+key, 'downloading'); } catch(_){}
+try { localStorage.setItem('mt_dl_'+key, String(Date.now())); } catch(_){}
+// UAT-104: refresh flag every 60s (UAT-93 pattern). If tab crashes,
+// refreshes stop and the flag goes stale so another tab can retry.
+const _dlFlagTimer = setInterval(()=>{ try{ localStorage.setItem('mt_dl_'+key, String(Date.now())); }catch(_){} }, 60000);
 const statEl = document.getElementById('mstat-'+key);
 const progEl = document.getElementById('mprog-'+key);
 if (statEl) statEl.textContent = 'Downloading…';
@@ -1974,6 +1987,7 @@ if (statEl) statEl.textContent = 'Download failed: ' + String((e&&e.message)||e)
 try { await deleteModelCache(m.id); } catch(_){}
 }
 }finally{
+clearInterval(_dlFlagTimer); // UAT-104
 App._dlActive = null; // UAT-5: release the in-memory download lock
 Engines.whisperModel = prevModel;
 Engines.resetWhisperWorker();
@@ -2005,7 +2019,8 @@ try {
 const _dlKeys = [];
 for (let i = 0; i < localStorage.length; i++){
 const _k = localStorage.key(i);
-if (_k && _k.indexOf('mt_dl_') === 0 && localStorage.getItem(_k) === 'downloading') _dlKeys.push(_k);
+// UAT-104: staleness-aware check.
+if (_k && _k.indexOf('mt_dl_') === 0 && _dlFresh(_k.slice(6))) _dlKeys.push(_k);
 }
 if (_dlKeys.length || App._dlActive){
 alert('A model download is in progress — please wait until it finishes to delete models.');
@@ -2066,7 +2081,9 @@ if (statEl && total) statEl.textContent = `Downloading… ${Math.round(loaded/10
 };
 Engines.onProgress = myProgress;
 try{
-try { localStorage.setItem('mt_dl_'+key, 'downloading'); } catch(_){}
+try { localStorage.setItem('mt_dl_'+key, String(Date.now())); } catch(_){}
+// UAT-104: refresh flag (see manual path).
+const _dlFlagTimer2 = setInterval(()=>{ try{ localStorage.setItem('mt_dl_'+key, String(Date.now())); }catch(_){} }, 60000);
 App._dlActive = key; // UAT-5: in-memory lock against concurrent downloads
 let cancelled = false;
 let cancelReject = null;
@@ -2100,6 +2117,7 @@ if (statEl) statEl.textContent = 'Download failed: '+String(e.message||e).slice(
 try { await deleteModelCache(modelId); } catch(_){}
 }
 }finally{
+clearInterval(_dlFlagTimer2); // UAT-104
 App._dlActive = null; // UAT-5: release the in-memory download lock
 if (Engines.onProgress === myProgress) Engines.onProgress = null;
 if (progEl) progEl.style.display = 'none';
@@ -2355,7 +2373,8 @@ let _busy = (typeof App !== 'undefined') && (App.meeting || App.processing || (A
 if (!_busy){
 for (let i = 0; i < localStorage.length; i++){
 const _k = localStorage.key(i);
-if (_k && _k.indexOf('mt_dl_') === 0 && localStorage.getItem(_k) === 'downloading'){ _busy = true; break; }
+// UAT-104: staleness-aware.
+if (_k && _k.indexOf('mt_dl_') === 0 && _dlFresh(_k.slice(6))){ _busy = true; break; }
 }
 }
 if (_busy){
