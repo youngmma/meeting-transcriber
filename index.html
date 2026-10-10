@@ -165,11 +165,11 @@ label.lbl{display:block; font-size:var(--fs-sm); font-weight:700; margin:14px 0 
   .seg .spk.them{background:#222b38; color:#9aa7b8}
   .seg .spk.unk{background:#2c1d1d; color:#d69a9a}
 }
-.seg .ts{font-size:var(--fs-xs); color:var(--muted); cursor:pointer; text-decoration:underline;
-  text-underline-offset:2px; background:none; border:none; padding:0; font-family:inherit; font-variant-numeric:tabular-nums}
+.seg .ts{font-size:var(--fs-sm); color:var(--muted); cursor:pointer; text-decoration:underline;
+  text-underline-offset:2px; background:none; border:none; padding:6px 4px; font-family:inherit; font-variant-numeric:tabular-nums}
 .seg .ts:disabled{color:var(--muted); opacity:.5; text-decoration:none; cursor:default}
-.seg .editbtn{font-size:var(--fs-xs); color:var(--muted); cursor:pointer; background:none; border:none;
-  padding:4px 6px; margin-left:4px; border-radius:6px; transition:color .15s, background .15s}
+.seg .editbtn{font-size:var(--fs-sm); color:var(--muted); cursor:pointer; background:none; border:none;
+  padding:8px 10px; margin-left:4px; border-radius:6px; transition:color .15s, background .15s}
 .seg .editbtn:hover{color:var(--accent); background:var(--bg)}
 .seg .editarea{width:100%; font-size:15px; line-height:1.7; padding:10px 12px; border:1px solid var(--accent);
   border-radius:10px; margin-top:8px; font-family:inherit; background:var(--surface); color:var(--text)}
@@ -284,9 +284,9 @@ if ('serviceWorker' in navigator) {
       <h2 id="readTitle" style="font-size:17px"></h2>
       <div class="muted" id="readMeta"></div>
       <div style="margin-top:8px">
-        <button class="btn btn-ghost btn-small" id="btnDlTxt" type="button">Download txt</button>
-        <button class="btn btn-ghost btn-small" id="btnDlSrt" type="button">Download srt</button>
-        <button class="btn btn-ghost btn-small" id="btnCopyTx" type="button">Copy</button>
+        <button class="btn btn-ghost btn-small" id="btnDlTxt" type="button" title="Plain text with timestamps — easy to read and share">Download txt</button>
+        <button class="btn btn-ghost btn-small" id="btnDlSrt" type="button" title="Subtitle file — for video players and editors">Download srt</button>
+        <button class="btn btn-ghost btn-small" id="btnCopyTx" type="button" title="Copy the full transcript to clipboard">Copy</button>
         <button class="btn btn-ghost btn-small" id="btnBack" type="button">Back to list</button>
       </div>
     </div>
@@ -1079,7 +1079,7 @@ const App = {
       startedAt:this.meeting.startedAt, title:this.meeting.title,
       segmentsByChunk:{}, status:'recording' });
     this.lastSound = Date.now(); this.silenceWarned = false; this._fourHrWarned = false;
-    this._chunkTimes = []; this._consecFails = 0; this._battMsg = null; this._battWarned = false; // P15/P8/P62: fresh per-meeting stats
+    this._chunkTimes = []; this._consecFails = 0; this._battMsg = null; this._battWarned = false; this._silenceMsg = null; this._fourHrMsg = null; // P15/P8/P62/UAT-42: fresh per-meeting stats
     this._quotaWarned = false; this._lastQuotaCheck = 0; // Round 2 #6: fresh quota state
     try { $('storageFullWarn').classList.remove('show'); } catch(_){}
 
@@ -1095,14 +1095,14 @@ const App = {
       const silMin = this.silenceTimeoutMin || 10;
       if (silMin > 0 && !this.silenceWarned && Date.now()-this.lastSound > silMin*60*1000){
         this.silenceWarned = true;
-        const tp = $('txProg');
-        if (tp) tp.textContent = `⚠️ No sound for ${silMin} min — still recording. Stop manually if done.`;
+        // UAT-42: store as persistent message (appended in updateTxProg) instead of
+        // overwriting txProg — otherwise the next progress update erases the warning.
+        this._silenceMsg = `⚠️ No sound for ${silMin} min — still recording. Stop manually if done.`;
       }
       // auto-stop at 4 hours
       if (elapsed > 3.5*3600 && !this._fourHrWarned){
         this._fourHrWarned = true;
-        const tp = $('txProg');
-        if (tp) tp.textContent = '⚠️ Recording will auto-stop at 4 hours (30 min left). Stop and start a new recording to continue.';
+        this._fourHrMsg = '⚠️ Recording will auto-stop at 4 hours (30 min left). Stop and start a new recording to continue.';
       }
       if (elapsed > 4*3600) this.stopRecording();
     };
@@ -1243,6 +1243,8 @@ const App = {
       txt = `${mode==='Recovering'?'Recovering':'Transcribing'}… ${this.meeting.chunksDone}/${this.meeting.chunksTotal} chunks${winTxt}${etaTxt}`;
     }
     if (this._battMsg) txt += '\n' + this._battMsg;
+    if (this._silenceMsg) txt += '\n' + this._silenceMsg;
+    if (this._fourHrMsg) txt += '\n' + this._fourHrMsg;
     if (this._draining) txt += '\nYou can close this tab — audio is saved. Use "Complete transcription" from the list to resume.';
     const tp = $('txProg'); if (tp) tp.textContent = txt;
     const ri = $('recoveryInfo');
@@ -1269,7 +1271,7 @@ const App = {
         const b = await navigator.getBattery();
         if (!b.charging && b.level <= 0.2){
           this._battWarned = true;
-          this._battMsg = '⚠️ Battery low (' + Math.round(b.level*100) + '%) — Standard (base) model saves power.';
+          this._battMsg = '⚠️ Battery low (' + Math.round(b.level*100) + '%) — plug in your charger. Transcription continues but may slow down.';
         }
       }
     } catch(_){}
@@ -1278,6 +1280,15 @@ const App = {
       while (this.queue.length){
         const job = this.queue.shift();
         await this.transcribeJob(job);
+        // UAT-36: re-check battery every 6 chunks (~30 min) — a 2-hour job can drain below 20% mid-run
+        try {
+          if (navigator.getBattery && this.meeting && (this.meeting.chunksDone % 6 === 0)){
+            const b2 = await navigator.getBattery();
+            if (!b2.charging && b2.level <= 0.2 && !this._battMsg){
+              this._battMsg = '⚠️ Battery low (' + Math.round(b2.level*100) + '%) — plug in your charger. Transcription continues but may slow down.';
+            }
+          }
+        } catch(_){}
         if (this.meeting && job.meetingId===this.meeting.id){
           this.meeting.chunksDone++; this.updateTxProg();
           if (this.meeting.recovering){
@@ -1361,7 +1372,13 @@ const App = {
         const cp2 = await get('checkpoints', meetingId);
         if (cp2){
           const errs = cp2.transcribeErrors || {};
-          errs[chunkIndex] = String((e && e.message) || e).slice(0,200);
+          let msg = String((e && e.message) || e).slice(0,200);
+          // UAT-37: model-load failures need actionable guidance, not just the raw error.
+          // The fix is delete + re-download; tell the user exactly that.
+          if (/model not initialized|worker.*failed|failed to load|corrupt|unexpected token|invalid/i.test(msg)){
+            msg += ' — The model files may be corrupted. Go to Settings → Delete the model → Download it again.';
+          }
+          errs[chunkIndex] = msg;
           await put('checkpoints', { ...cp2, transcribeErrors: errs });
         }
       } catch(_){}
@@ -1559,7 +1576,7 @@ const App = {
     }
     for (const a of missing) this.queue.push({meetingId, chunkIndex:a.chunkIndex});
     this.meeting = { id:meetingId, chunksDone:doneIdx.size, chunksTotal:auds.length, recovering:true };
-    this._chunkTimes = []; this._consecFails = 0; this._battMsg = null; this._battWarned = false; // Cycle 6/P62: reset per-recovery stats
+    this._chunkTimes = []; this._consecFails = 0; this._battMsg = null; this._battWarned = false; this._silenceMsg = null; this._fourHrMsg = null; // Cycle 6/P62/UAT-42: reset per-recovery stats
     Engines._sessionLang = null;
     if (card){
       $('btnRecover').disabled = true; $('btnAbandon').disabled = true;
@@ -1802,11 +1819,16 @@ async function openReader(id){
             tt.edits = tt.edits || {};
             tt.edits[s.start+'-'+s.end] = nt;
             await put('transcripts', tt);
+            // UAT-40: update in place instead of full re-render — preserves scroll position
+            s.text = nt;
+            tx.textContent = ' ' + nt;
           }
         }
-        openReader(id);
+        // restore the normal segment view without rebuilding the whole list
+        ta.remove(); row.remove();
+        tx.style.display=''; eb.style.display='';
       };
-      ca.onclick = ()=>openReader(id);
+      ca.onclick = ()=>{ ta.remove(); row.remove(); tx.style.display=''; eb.style.display=''; };
     };
     div.append(spk, ts, tx, eb);
     box.appendChild(div);
@@ -1843,7 +1865,17 @@ async function init(){
       const t = await get('transcripts', currentReadId);
       if (!t) return;
       const txt = typeof txtOf === 'function' ? txtOf(t) : t.segments.map(s=>s.text).join('\n');
-      await navigator.clipboard.writeText(txt);
+      try {
+        await navigator.clipboard.writeText(txt);
+      } catch(_){
+        // UAT-41: clipboard API can fail (permissions, insecure context) — fallback to execCommand
+        const ta = document.createElement('textarea');
+        ta.value = txt; ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta); ta.select();
+        const ok = document.execCommand('copy');
+        ta.remove();
+        if (!ok) throw new Error('copy failed');
+      }
       const b = $('btnCopyTx'); const orig = b.textContent;
       b.textContent = 'Copied!'; setTimeout(()=>{ b.textContent = orig; }, 1500);
     } catch(_){ alert('Copy failed.'); }
