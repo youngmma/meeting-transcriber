@@ -1825,13 +1825,16 @@ async function openReader(id){
     const div = document.createElement('div'); div.className='seg';
     const spk = document.createElement('button');
     spk.type = 'button';
-    spk.className = 'spk ' + (s.speaker==='Me'?'me':s.speaker==='Other'?'them':'unk');
-    spk.textContent = s.speaker;
+    // UAT-57: old segments may lack speaker field — show 'Unknown', never 'undefined'
+    const spkName = s.speaker || 'Unknown';
+    spk.className = 'spk ' + (spkName==='Me'?'me':spkName==='Other'?'them':'unk');
+    spk.textContent = spkName;
     spk.title = 'Tap to change speaker (Me / Other / Unknown)';
     // UAT-54: speaker labels are heuristic-based and can be wrong — let user correct them
     spk.onclick = async ()=>{
       const order = ['Me','Other','Unknown'];
-      const next = order[(order.indexOf(s.speaker)+1) % order.length] || 'Me';
+      const cur = s.speaker || 'Unknown';
+      const next = order[(order.indexOf(cur)+1) % order.length] || 'Me';
       const tt = await get('transcripts', id);
       if (tt && tt.segments[i]){
         tt.segments[i].speaker = next;
@@ -1888,7 +1891,7 @@ async function openReader(id){
 function txtOf(t){
   const lines = [t.title, ''];
   for (const s of t.segments)
-    lines.push(`[${srtTimestamp(s.start).slice(0,8)}] ${s.speaker}: ${s.text}`);
+    lines.push(`[${srtTimestamp(s.start).slice(0,8)}] ${s.speaker || 'Unknown'}: ${s.text}`);
   return lines.join('\n');
 }
 
@@ -1935,22 +1938,40 @@ async function init(){
   };
   $('btnDlSrt').onclick = async ()=>{
     const t = await get('transcripts', currentReadId); if(!t) return;
-    download(safeFilename(t.title, '.srt'), toSRT(t.segments.map(s=>({start:s.start,end:s.end,text:`[${s.speaker}] ${s.text}`}))), 'text/plain;charset=utf-8');
+    download(safeFilename(t.title, '.srt'), toSRT(t.segments.map(s=>({start:s.start,end:s.end,text:`[${s.speaker || 'Unknown'}] ${s.text}`}))), 'text/plain;charset=utf-8');
   };
   // UAT-55: native share sheet — fastest path to send transcript on mobile
+  // UAT-56: distinguish user dismissal (silent) from real share errors (fallback to clipboard)
   $('btnShareTx').onclick = async ()=>{
     const t = await get('transcripts', currentReadId); if(!t) return;
     const txt = typeof txtOf === 'function' ? txtOf(t) : t.segments.map(s=>s.text).join('\n');
+    const copyFallback = async (msg)=>{
+      try {
+        try {
+          await navigator.clipboard.writeText(txt);
+        } catch(_){
+          // UAT-58: clipboard API can fail (insecure context) — try execCommand before giving up
+          const ta = document.createElement('textarea');
+          ta.value = txt; ta.style.position = 'fixed'; ta.style.opacity = '0';
+          document.body.appendChild(ta); ta.select();
+          const ok = document.execCommand('copy');
+          ta.remove();
+          if (!ok) throw new Error('copy failed');
+        }
+        alert(msg || 'Transcript copied to clipboard.');
+      } catch(_){ alert('Copy failed. Try selecting the transcript text manually.'); }
+    };
     if (navigator.share){
       try {
         await navigator.share({ title: t.title, text: txt });
-      } catch(_){ /* user dismissed — no error needed */ }
+      } catch(e){
+        if (e && e.name === 'AbortError') return; // user dismissed the share sheet — silent
+        // Real error (e.g. text too long, not allowed) — fall back to clipboard
+        await copyFallback('Sharing failed — transcript copied to clipboard instead.');
+      }
     } else {
       // Desktop fallback: copy to clipboard
-      try {
-        await navigator.clipboard.writeText(txt);
-        alert('Share is not supported on this device — transcript copied to clipboard instead.');
-      } catch(_){ alert('Copy failed. Try selecting the transcript text manually.'); }
+      await copyFallback('Share is not supported on this device — transcript copied to clipboard instead.');
     }
   };
   // settings
