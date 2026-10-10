@@ -2296,7 +2296,7 @@ if (shortOf(String(Engines._activeModel)) === mshort && mshort) downloaded = tru
 }
 } catch(_){}
 if (mshort && !downloaded){
-b.textContent = backend + ' · no model downloaded';
+b.textContent = backend + ' · ' + mshort + ' not downloaded';
 b.title = 'Backend: ' + backend + '. Selected model (' + mshort + ') is not downloaded.';
 } else if (fellBack){
 b.textContent = backend + ' · ' + ashort + ' (fallback)';
