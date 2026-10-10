@@ -895,11 +895,14 @@ const Engines = {
         const pinned = lgSet ? lgSet.v : 'auto';
         if (pinned && pinned !== 'auto'){
           lang = pinned;
+          // Only cache pinned languages — UAT-44: in 'auto' mode, let Whisper
+          // detect per chunk so mixed-language meetings (Korean sermon →
+          // English announcements) transcribe correctly instead of locking
+          // to the first chunk's language for the whole session.
+          if (lang) this._sessionLang = lang;
         } else {
-          lang = await this.detectLanguage(pcm.slice(0, Math.min(WIN, pcm.length)));
+          lang = null; // Whisper auto-detects per chunk
         }
-        // Only cache if detection succeeded (not null)
-        if (lang) this._sessionLang = lang;
       } catch(e){ console.warn('Language detection failed, Whisper will auto-detect:', e); }
     }
     const segs=[];
@@ -2475,7 +2478,22 @@ async function init(){
   });
 }
 
-document.addEventListener('DOMContentLoaded', init);
+document.addEventListener('DOMContentLoaded', ()=>{
+  init().catch((e)=>{
+    // UAT-43: IndexedDB blocked/corrupted → init() throws, leaving dead buttons
+    // with no explanation. Show an honest error instead.
+    try {
+      const msg = 'Could not open local storage (IndexedDB): ' + String((e && e.message) || e).slice(0, 200) +
+        '\n\nThe app needs browser storage to save transcripts. Try:\n' +
+        '1. Turn off Private/Incognito mode\n' +
+        '2. Allow site data in browser settings\n' +
+        '3. Restart the browser and try again';
+      const el = document.getElementById('permErr');
+      if (el){ el.textContent = msg; el.classList.add('show'); }
+      else { alert(msg); }
+    } catch(_){}
+  });
+});
 </script>
 </body>
 </html>
