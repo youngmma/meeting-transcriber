@@ -1198,6 +1198,15 @@ const card = $('recoveryCard');
 let cps = (await all('checkpoints')).filter(c=>{
 if (c.status !== 'recording') return false;
 if (c.lastBeat && Date.now() - c.lastBeat < 90000) return false;
+// UAT-99: skip checkpoints with an active cross-tab recovery flag — another
+// tab is already recovering this meeting. Without this, the storage event
+// (fired when the other tab sets the flag) triggers checkRecovery here,
+// which shows a phantom "Interrupted recording" card for a meeting that's
+// already being recovered.
+try {
+const _rv = localStorage.getItem('mt_recovering_' + c.meetingId);
+if (_rv && Date.now() - Number(_rv) < 5*60*1000) return false;
+} catch(_){}
 return true;
 });
 // UAT-89: a background tab's 30s heartbeat can be throttled past the 90s
@@ -1908,6 +1917,18 @@ else alert('A model download is in progress — please wait until it finishes.')
 return;
 }
 if (!confirm(`Download the ${m.name} model (${m.size})?\n\nOn mobile data this uses significant data. Wi-Fi recommended.`)) return;
+// UAT-100: re-check AFTER the confirm — another tab may have started a
+// download while the dialog was open. App._dlActive is per-tab (in-memory),
+// so check the cross-tab localStorage flag too. Starting a second download
+// would fight over the worker and cause "worker replaced" chunk failures.
+try {
+const _dl = localStorage.getItem('mt_dl_'+key);
+if (_dl === 'downloading'){
+alert('A model download is already in progress in another tab — please wait until it finishes.');
+try { renderModelList(); } catch(_){}
+return;
+}
+} catch(_){}
 App._dlActive = key;
 try { localStorage.setItem('mt_dl_'+key, 'downloading'); } catch(_){}
 const statEl = document.getElementById('mstat-'+key);
@@ -1976,6 +1997,22 @@ alert('A recording, transcription, or download is in progress — please wait un
 return;
 }
 if (!confirm(`Delete ${m.name} model files?`)) return;
+// UAT-101: re-check AFTER the confirm — another tab may have started a
+// download/recording while the dialog was open. App._dlActive is per-tab,
+// so check the cross-tab localStorage flag too. Deleting model files out
+// from under an active download corrupts it.
+try {
+const _dlKeys = [];
+for (let i = 0; i < localStorage.length; i++){
+const _k = localStorage.key(i);
+if (_k && _k.indexOf('mt_dl_') === 0 && localStorage.getItem(_k) === 'downloading') _dlKeys.push(_k);
+}
+if (_dlKeys.length || App._dlActive){
+alert('A model download is in progress — please wait until it finishes to delete models.');
+try { renderModelList(); } catch(_){}
+return;
+}
+} catch(_){}
 await deleteModelCache(m.id);
 try { localStorage.removeItem('mt_dl_'+m.id.replace(/[^a-z0-9]/gi,'')); } catch(_){}
 renderModelList();
@@ -2150,7 +2187,17 @@ return;
 const deletable = auds.filter(a=>!liveIds.has(a.meetingId));
 if (!deletable.length){ alert('Only recordings for in-progress meetings exist — nothing safe to delete.'); return; }
 if (!confirm(`Delete ${deletable.length} stored recording chunk(s)? Transcripts are kept.`)) return;
-for (const a of deletable) await del('audio', [a.meetingId, a.chunkIndex]);
+// UAT-102: re-check AFTER the confirm — another tab may have started a
+// recording while the dialog was open. The liveIds set was built before
+// the confirm; rebuild it to avoid deleting audio for a just-started
+// recording.
+try {
+const cps2 = await all('checkpoints');
+for (const c of cps2) if (c.status === 'recording') liveIds.add(c.meetingId || c.id);
+if (App.meeting) liveIds.add(App.meeting.id);
+} catch(_){}
+const deletable2 = auds.filter(a=>!liveIds.has(a.meetingId));
+for (const a of deletable2) await del('audio', [a.meetingId, a.chunkIndex]);
 updateStorageInfo();
 alert('Recordings deleted. Transcripts kept.');
 };
@@ -2300,6 +2347,22 @@ return;
 }
 } catch(_){}
 if (!confirm('Delete all transcripts, recordings, and settings? Models will be kept. This cannot be undone.')) return;
+// UAT-103: re-check AFTER the confirm — another tab may have started a
+// recording/transcription/download while the dialog was open. Wiping now
+// would delete their in-progress work.
+try {
+let _busy = (typeof App !== 'undefined') && (App.meeting || App.processing || (App.queue && App.queue.length) || App._dlActive);
+if (!_busy){
+for (let i = 0; i < localStorage.length; i++){
+const _k = localStorage.key(i);
+if (_k && _k.indexOf('mt_dl_') === 0 && localStorage.getItem(_k) === 'downloading'){ _busy = true; break; }
+}
+}
+if (_busy){
+alert('A recording, transcription, or download is in progress (possibly in another tab). Please wait for it to finish before deleting all data.');
+return;
+}
+} catch(_){}
 try {
 for (const s of ['transcripts','audio','checkpoints','settings']) await clearStore(s);
 } catch(e){
