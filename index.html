@@ -559,7 +559,11 @@ return filterHallucinations(segs);
 const App = {
 meeting:null, queue:[], processing:false, lastSound:0, silenceWarned:false,
 audioEl:null, silenceTimeoutMin:10,
-_tabId: 'tab-' + Math.random().toString(36).slice(2, 10),
+_tabId: (function(){ try {
+var _id = sessionStorage.getItem('mt_tabid');
+if (!_id){ _id = 'tab-' + Math.random().toString(36).slice(2, 10); try { sessionStorage.setItem('mt_tabid', _id); } catch(_){} }
+return _id;
+} catch(_){ return 'tab-' + Math.random().toString(36).slice(2, 10); } })(),
 _bc: null,
 _otherTabRecording: false,
 _initBroadcast(){
@@ -624,6 +628,20 @@ this._starting = false;
 alert('A model download is in progress — please wait until it finishes to start recording.');
 return;
 }
+// UAT-110: cross-tab guard — another tab may be downloading (this tab's _dlActive is null)
+try {
+if (typeof MODELS !== 'undefined'){
+for (var _mi = 0; _mi < MODELS.length; _mi++){
+var _mk = MODELS[_mi].id.replace(/[^a-z0-9]/gi,'');
+var _rfi = _dlFlagInfo(_mk);
+if (_rfi.fresh && !_rfi.mine){
+this._starting = false;
+alert('A model download is in progress in another tab — please wait until it finishes to start recording.');
+return;
+}
+}
+}
+} catch(_){}
 if (this.meeting){
 this._starting = false;
 alert(this.meeting.recovering
@@ -698,6 +716,24 @@ el.textContent = 'A model download started while you were granting permissions �
 el.classList.add('show');
 return;
 }
+// UAT-110b: cross-tab re-check after permission popup
+try {
+if (typeof MODELS !== 'undefined'){
+for (var _mj = 0; _mj < MODELS.length; _mj++){
+var _mk2 = MODELS[_mj].id.replace(/[^a-z0-9]/gi,'');
+var _rfi2 = _dlFlagInfo(_mk2);
+if (_rfi2.fresh && !_rfi2.mine){
+AudioCap.abort();
+this._releaseRecordingLock();
+this._starting = false;
+const el2 = $('permErr');
+el2.textContent = 'A model download started in another tab while you were granting permissions — please wait until it finishes, then start recording.';
+el2.classList.add('show');
+return;
+}
+}
+}
+} catch(_){}
 const startedAt = new Date();
 this.meeting = {
 id: 'm'+Date.now().toString(36), topic: sanitizeTopic(topic),
@@ -1904,11 +1940,13 @@ return;
 }
 if (!confirm(`Download the ${m.name} model (${m.size})?\n\nOn mobile data this uses significant data. Wi-Fi recommended.`)) return;
 try {
-if (_dlFresh(key)){
+var _fi = _dlFlagInfo(key);
+if (_fi.fresh && !_fi.mine){
 alert('A model download is already in progress in another tab — please wait until it finishes.');
 try { renderModelList(); } catch(_){}
 return;
 }
+// UAT-107: if _fi.fresh && _fi.mine, it's my own crashed download — proceed to retry (flag gets overwritten below)
 } catch(_){}
 App._dlActive = key;
 try { _dlFlagSet(key); } catch(_){}
@@ -2034,6 +2072,22 @@ const cached = await isModelCached(modelId);
 if (Engines.whisperModel !== modelId) return; // superseded by a newer tap
 if (!cached){
 const key = modelId.replace(/[^a-z0-9]/gi,'');
+// UAT-108: cross-tab guard (manual Download button has this; selectModel was missing it)
+try {
+var _sfi = _dlFlagInfo(key);
+if (_sfi.fresh && !_sfi.mine){
+alert('A model download is already in progress in another tab — please wait until it finishes.');
+try { renderModelList(); } catch(_){}
+return;
+}
+} catch(_){}
+// UAT-109: mobile-data confirm (parity with manual Download button)
+var _sm = null;
+try { _sm = MODELS.find(function(m){ return m.id === modelId; }); } catch(_){}
+if (_sm && !confirm('Download the ' + _sm.name + ' model (' + _sm.size + ')?\n\nOn mobile data this uses significant data. Wi-Fi recommended.')){
+try { renderModelList(); } catch(_){}
+return;
+}
 const statEl = document.getElementById('mstat-'+key);
 const progEl = document.getElementById('mprog-'+key);
 if (statEl) statEl.textContent = 'Downloading…';
