@@ -606,12 +606,6 @@ _releaseRecordingLock(){
 try{ if (this._lockRelease){ const r=this._lockRelease; this._lockRelease=null; r(); } }catch(_){}
 this._lockHeld = false;
 },
-// UAT-89: true if another tab currently holds the exclusive recording lock.
-// The 30s heartbeat can be throttled past the 90s staleness threshold in a
-// background tab (or delayed across sleep/wake), making an ACTIVE recording
-// look crashed. The Web Lock is not throttled, so it disambiguates: lock
-// held = someone is recording right now. Returns false when the Web Locks
-// API is unavailable (heartbeat-only fallback).
 async _isRecordingLockHeld(){
 try {
 if (!('locks' in navigator)) return false;
@@ -755,8 +749,6 @@ $('trackLostWarn').classList.add('show');
 this.stopRecording();
 };
 this._broadcast('recording-started');
-// UAT-87: heartbeat so other tabs don't mistake this active recording for a crash.
-// checkRecovery() skips checkpoints with a recent heartbeat.
 try {
 if (this._heartbeat) clearInterval(this._heartbeat);
 this._heartbeat = setInterval(async ()=>{
@@ -1194,27 +1186,15 @@ try { sessionStorage.setItem('mt-autodl', t.title); } catch(_){}
 /** Crash recovery: show the interrupted session as a start-screen card (instead of native confirm) */
 async checkRecovery(){
 const card = $('recoveryCard');
-// UAT-87: skip checkpoints with a recent heartbeat — they're active recordings in another tab, not crashes.
 let cps = (await all('checkpoints')).filter(c=>{
 if (c.status !== 'recording') return false;
 if (c.lastBeat && Date.now() - c.lastBeat < 90000) return false;
-// UAT-99: skip checkpoints with an active cross-tab recovery flag — another
-// tab is already recovering this meeting. Without this, the storage event
-// (fired when the other tab sets the flag) triggers checkRecovery here,
-// which shows a phantom "Interrupted recording" card for a meeting that's
-// already being recovered.
 try {
 const _rv = localStorage.getItem('mt_recovering_' + c.meetingId);
 if (_rv && Date.now() - Number(_rv) < 5*60*1000) return false;
 } catch(_){}
 return true;
 });
-// UAT-89: a background tab's 30s heartbeat can be throttled past the 90s
-// threshold (Chrome throttles background timers to ~1/min; sleep/wake also
-// delays beats), making an ACTIVE recording look crashed — and _initBroadcast
-// only runs in startRecording, so a fresh tab relies on the heartbeat alone.
-// The Web Lock is not throttled: if another tab holds mt-recording, someone
-// is recording right now, so don't offer Recover/Discard for these.
 if (cps.length){
 try { if (await this._isRecordingLockHeld()) cps = []; } catch(_){}
 }
@@ -1229,20 +1209,15 @@ card.style.display='block';
 $('recoveryInfo').textContent = `${cp.title} — ${n} transcribed chunk${n===1?'':'s'}, ${auds.length} audio chunk${auds.length===1?'':'s'}${extra}`;
 $('btnRecover').onclick = ()=>this.doRecover(cp.meetingId);
 $('btnAbandon').onclick = async ()=>{
-// UAT-87: re-check heartbeat — another tab may have started recording since the card was shown.
 try {
 const fresh = await get('checkpoints', cp.meetingId);
 if (fresh && fresh.lastBeat && Date.now() - fresh.lastBeat < 90000){
-// UAT-94: name the recording's start time so the user can tell WHICH tab.
 const _when = fresh.startedAt ? new Date(fresh.startedAt).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'}) : '';
 alert('This recording appears to be active in another tab' + (_when ? ' (started ' + _when + ')' : '') + '. Please stop it there first.');
 try { await App.checkRecovery(); } catch(_){}
 return;
 }
 } catch(_){}
-// UAT-95: check the cross-tab recovery flag — another tab may be recovering
-// this meeting right now. Discarding mid-recovery would delete audio out
-// from under the recovering tab, corrupting its transcript.
 try {
 const _rv = localStorage.getItem('mt_recovering_' + cp.meetingId);
 if (_rv && Date.now() - Number(_rv) < 5*60*1000){
@@ -1252,9 +1227,6 @@ return;
 }
 } catch(_){}
 if (!confirm('Discard the interrupted recording? Saved audio will be deleted too.')) return;
-// UAT-96: re-check the flag AFTER the confirm — another tab may have started
-// recovery while the dialog was open. Discarding now would delete audio out
-// from under the recovering tab, corrupting its transcript.
 try {
 const _rv2 = localStorage.getItem('mt_recovering_' + cp.meetingId);
 if (_rv2 && Date.now() - Number(_rv2) < 5*60*1000){
@@ -1286,13 +1258,9 @@ return;
 }
 const cp = await get('checkpoints', meetingId);
 if (!cp) return;
-// UAT-90: re-check — the card may be stale (the heartbeat may have resumed
-// since it was shown). Never transcribe a live recording; btnAbandon already
-// does this re-check for Discard, Recover needs it too.
 try {
 const freshCp = await get('checkpoints', meetingId);
 if (freshCp && freshCp.lastBeat && Date.now() - freshCp.lastBeat < 90000){
-// UAT-94: name the recording's start time so the user can tell WHICH tab.
 const _when2 = freshCp.startedAt ? new Date(freshCp.startedAt).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'}) : '';
 alert('This recording appears to be active in another tab' + (_when2 ? ' (started ' + _when2 + ')' : '') + '. Please stop it there first.');
 return;
@@ -1318,14 +1286,6 @@ alert(lostAudio
 : 'Everything is already transcribed — nothing to recover.');
 return;
 }
-// UAT-92: flag check BEFORE queue push — a blocked recovery must leave
-// no side effects. Stale queue items would otherwise be transcribed later
-// during an unrelated recording (pumpQueue drains the shared queue).
-// UAT-91: cross-tab double-recovery guard. Two tabs open on the same crashed
-// checkpoint would otherwise both transcribe it (duplicate work, double
-// "Recovery done" alerts, double txt auto-downloads). localStorage is
-// synchronous and cross-tab visible; 5-min staleness covers a tab that
-// crashed mid-recovery.
 const _recFlag = 'mt_recovering_' + meetingId;
 try {
 const _rv = localStorage.getItem(_recFlag);
@@ -1344,11 +1304,6 @@ $('btnRecover').disabled = true; $('btnAbandon').disabled = true;
 $('recoveryInfo').textContent = `${cp.title} — transcribing…`;
 }
 let recErr = null;
-// UAT-93: keep the cross-tab recovery flag fresh while this recovery runs.
-// A long recovery (12 chunks ≈ 12+ min) outlasts the 5-min staleness, which
-// would let a second tab start a duplicate recovery. Refresh every 60s; if
-// this tab crashes, refreshes stop and the flag goes stale in 5 min so
-// another tab can take over.
 const _flagTimer = setInterval(()=>{ try{ localStorage.setItem(_recFlag, String(Date.now())); }catch(_){} }, 60000);
 try {
 await this.pumpQueue();
@@ -1566,9 +1521,6 @@ if (typeof App!=='undefined' && App.meeting && App.meeting.recovering && App.mee
 alert('Transcription recovery is running for this meeting — please wait until it finishes to delete.');
 return;
 }
-// UAT-98: same-tab check above misses recovery running in ANOTHER tab.
-// Check the cross-tab recovery flag — deleting mid-recovery would pull audio
-// out from under the recovering tab, corrupting its transcript.
 const _recKey = 'mt_recovering_' + t.id;
 try {
 const _rv = localStorage.getItem(_recKey);
@@ -1579,8 +1531,6 @@ return;
 }
 } catch(_){}
 if (!confirm(`"${t.title||'(untitled)'}" Delete this transcript? (The recording will be deleted too.) This cannot be undone.`)) return;
-// UAT-96 pattern: re-check AFTER the confirm — another tab may have started
-// recovery while the dialog was open.
 try {
 const _rv2 = localStorage.getItem(_recKey);
 if (_rv2 && Date.now() - Number(_rv2) < 5*60*1000){
@@ -1824,26 +1774,43 @@ for (const m of MODELS){
 const cached = await isModelCached(m.id);
 const el = document.getElementById('mstat-'+m.id.replace(/[^a-z0-9]/gi,''));
 if (!el) continue;
-let incomplete = false;
+let txt = cached ? '✓ Downloaded' : 'Not downloaded';
 try {
 const key = m.id.replace(/[^a-z0-9]/gi,'');
-incomplete = _dlFresh(key);
+const fi = _dlFlagInfo(key);
+if (fi.fresh){
+let mineActive = false;
+try { mineActive = (typeof App !== 'undefined' && App._dlActive === key); } catch(_){}
+if (mineActive) txt = 'Downloading…';
+else if (fi.mine) txt = '⚠️ Incomplete download — please re-download';
+else txt = 'Downloading in another tab…';
+}
 } catch(_){}
-el.textContent = incomplete ? '⚠️ Incomplete download — please re-download'
-: cached ? '✓ Downloaded' : 'Not downloaded';
+el.textContent = txt;
 }
 }
-// UAT-104: download flag was plain 'downloading' (no timestamp) — a crash
-// left it stuck, permanently blocking re-download/delete/wipe. Now a
-// timestamp, refreshed every 60s (UAT-93 pattern); stale after 5 min.
-function _dlFresh(key){
+function _dlFlagInfo(key){
 try {
 const v = localStorage.getItem('mt_dl_'+key);
-if (!v || v === 'done') return false;
-const t = Number(v);
-if (isNaN(t)) return false;
-return Date.now() - t < 5*60*1000;
-} catch(_){ return false; }
+if (!v || v === 'done') return { fresh:false, mine:false, done: v==='done' };
+let tabId = null, t = NaN;
+const ci = v.indexOf(':');
+if (ci > 0){ tabId = v.slice(0, ci); t = Number(v.slice(ci+1)); }
+else { t = Number(v); }
+if (isNaN(t)) return { fresh:false, mine:false, done:false };
+const fresh = Date.now() - t < 5*60*1000;
+let mine = false;
+try { mine = !!(tabId && typeof App !== 'undefined' && App._tabId && tabId === App._tabId); } catch(_){}
+return { fresh, mine, done:false };
+} catch(_){ return { fresh:false, mine:false, done:false }; }
+}
+function _dlFresh(key){ return _dlFlagInfo(key).fresh; }
+function _dlFlagSet(key){
+try {
+let tid = '';
+try { tid = (typeof App !== 'undefined' && App._tabId) ? App._tabId : ''; } catch(_){}
+localStorage.setItem('mt_dl_'+key, (tid ? tid+':' : '') + String(Date.now()));
+} catch(_){}
 }
 async function isModelCached(modelId){
 try{
@@ -1888,23 +1855,31 @@ box.innerHTML = '';
 for (const m of MODELS){
 const key = m.id.replace(/[^a-z0-9]/gi,'');
 let cached = await isModelCached(m.id);
-let incomplete = false;
+let dlState = 'none'; // UAT-105: none | mine-active | other-active | mine-crashed
 try {
-if (_dlFresh(key)){
-incomplete = true;
-cached = false; // treat as not downloaded
+const fi = _dlFlagInfo(key);
+if (fi.fresh){
+if (fi.mine){
+try { dlState = (typeof App !== 'undefined' && App._dlActive === key) ? 'mine-active' : 'mine-crashed'; }
+catch(_){ dlState = 'mine-crashed'; }
+} else dlState = 'other-active';
 }
+if (dlState !== 'none'){ cached = false; } // treat as not downloaded while flag fresh
 } catch(_){}
 const row = document.createElement('div');
 row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border)';
 const activeDl = (typeof App !== 'undefined' && App._dlActive === key);
+const dlStatusText = activeDl ? 'Downloading…'
+: dlState === 'other-active' ? 'Downloading in another tab…'
+: dlState === 'mine-crashed' ? '⚠️ Incomplete download — please re-download'
+: (cached ? '✓ Downloaded' : 'Not downloaded');
 const radio = document.createElement('input');
 radio.type = 'radio'; radio.name = 'modelPick'; radio.value = m.id;
 radio.checked = (m.id === current);
 radio.onchange = ()=>selectModel(m.id);
 const info = document.createElement('div');
 info.style.flex = '1';
-info.innerHTML = `<div><b>${m.name}</b><span class="muted">(${m.tech}, ${m.size})</span><span class="muted">· ${m.desc}</span></div><div class="muted" style="font-size:12px" id="mstat-${m.id.replace(/[^a-z0-9]/gi,'')}">${activeDl ? 'Downloading…' : (incomplete ? '⚠️ Incomplete download — please re-download' : (cached ? '✓ Downloaded' : 'Not downloaded'))}</div><div style="display:none;height:4px;background:var(--border);border-radius:2px;margin-top:4px" id="mprog-${m.id.replace(/[^a-z0-9]/gi,'')}"><div style="height:100%;background:var(--accent);border-radius:2px;width:0%"></div></div>`;
+info.innerHTML = `<div><b>${m.name}</b><span class="muted">(${m.tech}, ${m.size})</span><span class="muted">· ${m.desc}</span></div><div class="muted" style="font-size:12px" id="mstat-${m.id.replace(/[^a-z0-9]/gi,'')}">${dlStatusText}</div><div style="display:none;height:4px;background:var(--border);border-radius:2px;margin-top:4px" id="mprog-${m.id.replace(/[^a-z0-9]/gi,'')}"><div style="height:100%;background:var(--accent);border-radius:2px;width:0%"></div></div>`;
 row.append(radio, info);
 if (!cached){
 const dl = document.createElement('button');
@@ -1928,10 +1903,6 @@ else alert('A model download is in progress — please wait until it finishes.')
 return;
 }
 if (!confirm(`Download the ${m.name} model (${m.size})?\n\nOn mobile data this uses significant data. Wi-Fi recommended.`)) return;
-// UAT-100: re-check AFTER the confirm — another tab may have started a
-// download while the dialog was open. App._dlActive is per-tab (in-memory),
-// so check the cross-tab localStorage flag too. Starting a second download
-// would fight over the worker and cause "worker replaced" chunk failures.
 try {
 if (_dlFresh(key)){
 alert('A model download is already in progress in another tab — please wait until it finishes.');
@@ -1940,10 +1911,8 @@ return;
 }
 } catch(_){}
 App._dlActive = key;
-try { localStorage.setItem('mt_dl_'+key, String(Date.now())); } catch(_){}
-// UAT-104: refresh flag every 60s (UAT-93 pattern). If tab crashes,
-// refreshes stop and the flag goes stale so another tab can retry.
-const _dlFlagTimer = setInterval(()=>{ try{ localStorage.setItem('mt_dl_'+key, String(Date.now())); }catch(_){} }, 60000);
+try { _dlFlagSet(key); } catch(_){}
+const _dlFlagTimer = setInterval(()=>{ try{ _dlFlagSet(key); }catch(_){} }, 60000);
 const statEl = document.getElementById('mstat-'+key);
 const progEl = document.getElementById('mprog-'+key);
 if (statEl) statEl.textContent = 'Downloading…';
@@ -2011,15 +1980,10 @@ alert('A recording, transcription, or download is in progress — please wait un
 return;
 }
 if (!confirm(`Delete ${m.name} model files?`)) return;
-// UAT-101: re-check AFTER the confirm — another tab may have started a
-// download/recording while the dialog was open. App._dlActive is per-tab,
-// so check the cross-tab localStorage flag too. Deleting model files out
-// from under an active download corrupts it.
 try {
 const _dlKeys = [];
 for (let i = 0; i < localStorage.length; i++){
 const _k = localStorage.key(i);
-// UAT-104: staleness-aware check.
 if (_k && _k.indexOf('mt_dl_') === 0 && _dlFresh(_k.slice(6))) _dlKeys.push(_k);
 }
 if (_dlKeys.length || App._dlActive){
@@ -2081,9 +2045,8 @@ if (statEl && total) statEl.textContent = `Downloading… ${Math.round(loaded/10
 };
 Engines.onProgress = myProgress;
 try{
-try { localStorage.setItem('mt_dl_'+key, String(Date.now())); } catch(_){}
-// UAT-104: refresh flag (see manual path).
-const _dlFlagTimer2 = setInterval(()=>{ try{ localStorage.setItem('mt_dl_'+key, String(Date.now())); }catch(_){} }, 60000);
+try { _dlFlagSet(key); } catch(_){}
+const _dlFlagTimer2 = setInterval(()=>{ try{ _dlFlagSet(key); }catch(_){} }, 60000);
 App._dlActive = key; // UAT-5: in-memory lock against concurrent downloads
 let cancelled = false;
 let cancelReject = null;
@@ -2205,10 +2168,6 @@ return;
 const deletable = auds.filter(a=>!liveIds.has(a.meetingId));
 if (!deletable.length){ alert('Only recordings for in-progress meetings exist — nothing safe to delete.'); return; }
 if (!confirm(`Delete ${deletable.length} stored recording chunk(s)? Transcripts are kept.`)) return;
-// UAT-102: re-check AFTER the confirm — another tab may have started a
-// recording while the dialog was open. The liveIds set was built before
-// the confirm; rebuild it to avoid deleting audio for a just-started
-// recording.
 try {
 const cps2 = await all('checkpoints');
 for (const c of cps2) if (c.status === 'recording') liveIds.add(c.meetingId || c.id);
@@ -2365,15 +2324,11 @@ return;
 }
 } catch(_){}
 if (!confirm('Delete all transcripts, recordings, and settings? Models will be kept. This cannot be undone.')) return;
-// UAT-103: re-check AFTER the confirm — another tab may have started a
-// recording/transcription/download while the dialog was open. Wiping now
-// would delete their in-progress work.
 try {
 let _busy = (typeof App !== 'undefined') && (App.meeting || App.processing || (App.queue && App.queue.length) || App._dlActive);
 if (!_busy){
 for (let i = 0; i < localStorage.length; i++){
 const _k = localStorage.key(i);
-// UAT-104: staleness-aware.
 if (_k && _k.indexOf('mt_dl_') === 0 && _dlFresh(_k.slice(6))){ _busy = true; break; }
 }
 }
@@ -2449,9 +2404,6 @@ if (typeof updateEngineBadge === 'function') updateEngineBadge();
 try { if (typeof updateModelStatusNote === 'function') updateModelStatusNote(); } catch(_){}
 try { if (typeof renderModelList === 'function') renderModelList(); } catch(_){}
 }
-// UAT-97: cross-tab recovery flag changed (another tab started/finished
-// recovery) — refresh the recovery card so a stale "Interrupted recording"
-// card doesn't linger in this tab after the other tab finished.
 if (e.key && e.key.indexOf('mt_recovering_') === 0){
 try { App.checkRecovery().catch(()=>{}); } catch(_){}
 }
