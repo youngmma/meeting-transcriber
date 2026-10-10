@@ -606,6 +606,20 @@ _releaseRecordingLock(){
 try{ if (this._lockRelease){ const r=this._lockRelease; this._lockRelease=null; r(); } }catch(_){}
 this._lockHeld = false;
 },
+// UAT-89: true if another tab currently holds the exclusive recording lock.
+// The 30s heartbeat can be throttled past the 90s staleness threshold in a
+// background tab (or delayed across sleep/wake), making an ACTIVE recording
+// look crashed. The Web Lock is not throttled, so it disambiguates: lock
+// held = someone is recording right now. Returns false when the Web Locks
+// API is unavailable (heartbeat-only fallback).
+async _isRecordingLockHeld(){
+try {
+if (!('locks' in navigator)) return false;
+let held = false;
+await navigator.locks.request('mt-recording', { ifAvailable:true }, (lock)=>{ held = !lock; });
+return held;
+} catch(_){ return false; }
+},
 async startRecording(){
 hideBanner('permErr');
 try { $('trackLostWarn').classList.remove('show'); } catch(_){}
@@ -741,6 +755,18 @@ $('trackLostWarn').classList.add('show');
 this.stopRecording();
 };
 this._broadcast('recording-started');
+// UAT-87: heartbeat so other tabs don't mistake this active recording for a crash.
+// checkRecovery() skips checkpoints with a recent heartbeat.
+try {
+if (this._heartbeat) clearInterval(this._heartbeat);
+this._heartbeat = setInterval(async ()=>{
+try {
+if (!App.meeting) return;
+const cp = await get('checkpoints', App.meeting.id);
+if (cp && cp.status === 'recording') await put('checkpoints', {...cp, lastBeat: Date.now()});
+} catch(_){}
+}, 30000);
+} catch(_){}
 showScreen('scr-rec');
 try { this._requestWakeLock(); } catch(_){}
 const smr = $('sysMeterRow'); if (smr) smr.style.display = (cap && cap.micOnly) ? 'none' : '';
@@ -1077,6 +1103,7 @@ $('btnStop').disabled = false; $('btnStop').textContent = 'Stop and save';
 const spw2 = $('saveProgWrap'); if (spw2) spw2.style.display='none';
 this.meeting = null;
 this._stopping = false; // UAT-9b: release re-entrancy guard
+try { if (this._heartbeat){ clearInterval(this._heartbeat); this._heartbeat = null; } } catch(_){} // UAT-87: stop heartbeat
 try { document.title = 'Meeting Transcriber'; } catch(_){} // UAT-61: reset tab title
 try { setRecordingFavicon(false); } catch(_){} // UAT-62: restore normal favicon
 this._releaseRecordingLock(); // Round 2: release cross-tab exclusive lock
@@ -1167,7 +1194,21 @@ try { sessionStorage.setItem('mt-autodl', t.title); } catch(_){}
 /** Crash recovery: show the interrupted session as a start-screen card (instead of native confirm) */
 async checkRecovery(){
 const card = $('recoveryCard');
-const cps = (await all('checkpoints')).filter(c=>c.status==='recording');
+// UAT-87: skip checkpoints with a recent heartbeat — they're active recordings in another tab, not crashes.
+let cps = (await all('checkpoints')).filter(c=>{
+if (c.status !== 'recording') return false;
+if (c.lastBeat && Date.now() - c.lastBeat < 90000) return false;
+return true;
+});
+// UAT-89: a background tab's 30s heartbeat can be throttled past the 90s
+// threshold (Chrome throttles background timers to ~1/min; sleep/wake also
+// delays beats), making an ACTIVE recording look crashed — and _initBroadcast
+// only runs in startRecording, so a fresh tab relies on the heartbeat alone.
+// The Web Lock is not throttled: if another tab holds mt-recording, someone
+// is recording right now, so don't offer Recover/Discard for these.
+if (cps.length){
+try { if (await this._isRecordingLockHeld()) cps = []; } catch(_){}
+}
 if (!cps.length){ if (card) card.style.display='none'; return; }
 const cp = cps[0];
 const extra = cps.length > 1 ? ` (+${cps.length-1} more interrupted)` : '';
@@ -1179,6 +1220,15 @@ card.style.display='block';
 $('recoveryInfo').textContent = `${cp.title} — ${n} transcribed chunk${n===1?'':'s'}, ${auds.length} audio chunk${auds.length===1?'':'s'}${extra}`;
 $('btnRecover').onclick = ()=>this.doRecover(cp.meetingId);
 $('btnAbandon').onclick = async ()=>{
+// UAT-87: re-check heartbeat — another tab may have started recording since the card was shown.
+try {
+const fresh = await get('checkpoints', cp.meetingId);
+if (fresh && fresh.lastBeat && Date.now() - fresh.lastBeat < 90000){
+alert('This recording appears to be active in another tab. Please stop it there first.');
+try { await App.checkRecovery(); } catch(_){}
+return;
+}
+} catch(_){}
 if (!confirm('Discard the interrupted recording? Saved audio will be deleted too.')) return;
 await put('checkpoints', { ...cp, status:'abandoned' });
 for (const a of auds) await del('audio',[a.meetingId,a.chunkIndex]);
@@ -1203,6 +1253,16 @@ return;
 }
 const cp = await get('checkpoints', meetingId);
 if (!cp) return;
+// UAT-90: re-check — the card may be stale (the heartbeat may have resumed
+// since it was shown). Never transcribe a live recording; btnAbandon already
+// does this re-check for Discard, Recover needs it too.
+try {
+const freshCp = await get('checkpoints', meetingId);
+if (freshCp && freshCp.lastBeat && Date.now() - freshCp.lastBeat < 90000){
+alert('This recording appears to be active in another tab. Please stop it there first.');
+return;
+}
+} catch(_){}
 const card = $('recoveryCard');
 const auds = (await all('audio')).filter(a=>a.meetingId===meetingId)
 .sort((a,b)=>a.chunkIndex-b.chunkIndex);
@@ -1224,6 +1284,20 @@ alert(lostAudio
 return;
 }
 for (const a of missing) this.queue.push({meetingId, chunkIndex:a.chunkIndex});
+// UAT-91: cross-tab double-recovery guard. Two tabs open on the same crashed
+// checkpoint would otherwise both transcribe it (duplicate work, double
+// "Recovery done" alerts, double txt auto-downloads). localStorage is
+// synchronous and cross-tab visible; 5-min staleness covers a tab that
+// crashed mid-recovery.
+const _recFlag = 'mt_recovering_' + meetingId;
+try {
+const _rv = localStorage.getItem(_recFlag);
+if (_rv && Date.now() - Number(_rv) < 5*60*1000){
+alert('Recovery is already running in another tab. Please wait for it to finish.');
+return;
+}
+localStorage.setItem(_recFlag, String(Date.now()));
+} catch(_){}
 this.meeting = { id:meetingId, chunksDone:doneIdx.size, chunksTotal:auds.length, recovering:true };
 this._chunkTimes = []; this._consecFails = 0; this._battMsg = null; this._battWarned = false; this._silenceMsg = null; this._fourHrMsg = null; // Cycle 6/P62/UAT-42: reset per-recovery stats
 Engines._sessionLang = null;
@@ -1238,6 +1312,7 @@ await this.finalize(meetingId);
 } catch(e){ recErr = e; }
 finally {
 this.meeting = null;
+try { localStorage.removeItem('mt_recovering_' + meetingId); } catch(_){} // UAT-91: release double-recovery guard
 if (card){ card.style.display='none'; $('btnRecover').disabled = false; $('btnAbandon').disabled = false; }
 }
 if (recErr) alert('Recovery hit an error: ' + String((recErr&&recErr.message)||recErr).slice(0,120) + '\n\nYour audio is safe. Try "Complete transcription" again from the list.');
@@ -1446,7 +1521,7 @@ if (typeof App!=='undefined' && App.meeting && App.meeting.recovering && App.mee
 alert('Transcription recovery is running for this meeting — please wait until it finishes to delete.');
 return;
 }
-if (!confirm(`"${t.title||'(untitled)'}" Delete this transcript? (The recording will be deleted too.)`)) return;
+if (!confirm(`"${t.title||'(untitled)'}" Delete this transcript? (The recording will be deleted too.) This cannot be undone.`)) return;
 await del('transcripts', t.id);
 for (const a of (await all('audio')).filter(x=>x.meetingId===t.id))
 await del('audio',[a.meetingId,a.chunkIndex]);
