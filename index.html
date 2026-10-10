@@ -493,7 +493,7 @@ function download(name, text, mime){
 }
 // Same sanitization the Audio export already uses.
 function safeFilename(title, ext){
-  const base = String(title||'meeting').replace(/[^\w\- ]+/g,'').trim().slice(0,60) || 'meeting';
+  const base = String(title||'meeting').replace(/[^\p{L}\p{N}\- ]+/gu,'').trim().slice(0,60) || 'meeting';
   return base + ext;
 }
 function esc(s){ const d=document.createElement('div'); d.textContent=String(s??''); return d.innerHTML; }
@@ -786,7 +786,7 @@ const Engines = {
       const myWorker = w, myGen = this._workerGen;
       return new Promise((res, rej)=>{
         let settled = false;
-        const done = (fn, v)=>{ if(!settled){ settled=true; clearTimeout(to); clearInterval(live); w.removeEventListener('message',h); fn(v); } };
+        const done = (fn, v)=>{ if(!settled){ settled=true; clearTimeout(to); clearInterval(live); w.removeEventListener('message',h); w.removeEventListener('error',herr2); fn(v); } };
         const to = setTimeout(()=>{
           if (this._worker === myWorker && this._workerGen === myGen){ this._workerReady = null; }
           done(rej, new Error('transcription timeout: worker unresponsive (10 min)'));
@@ -796,6 +796,10 @@ const Engines = {
             done(rej, new Error('worker replaced mid-transcription'));
           }
         }, 2000);
+        const herr2 = ()=>{
+          if (this._worker === myWorker && this._workerGen === myGen){ this._workerReady = null; }
+          done(rej, new Error('worker crashed mid-transcription (possibly out of memory)'));
+        };
         const h = (e)=>{
           const m = e.data||{};
           if (m.id!==id) return;
@@ -806,6 +810,7 @@ const Engines = {
           }
         };
         w.addEventListener('message', h);
+        w.addEventListener('error', herr2);
         try { w.postMessage({ type:'transcribe', id, pcm, language }, [pcm.buffer]); }
         catch(e){ done(rej, new Error('worker postMessage failed: '+String((e&&e.message)||e).slice(0,80))); }
       });
@@ -1070,6 +1075,15 @@ const App = {
       el.classList.add('show');
       return;
     }
+    if (this._dlActive){
+      AudioCap.abort();
+      this._releaseRecordingLock();
+      this._starting = false;
+      const el = $('permErr');
+      el.textContent = 'A model download started while you were granting permissions — please wait until it finishes, then start recording.';
+      el.classList.add('show');
+      return;
+    }
     // 2) create session
     const startedAt = new Date();
     this.meeting = {
@@ -1320,6 +1334,20 @@ const App = {
     const rec = await get('audio', [meetingId, chunkIndex]);
     if (!rec) return;
     this._chunkStart = Date.now();
+    const tiny = rec.blob && rec.blob.size < 12000;
+    if (tiny){
+      try {
+        const cpT = await get('checkpoints', meetingId);
+        if (cpT){
+          const byChunk = cpT.segmentsByChunk || {};
+          if (!(chunkIndex in byChunk)){
+            byChunk[chunkIndex] = [];
+            await put('checkpoints', { ...cpT, segmentsByChunk: byChunk });
+          }
+        }
+      } catch(_){}
+      return;
+    }
     try {
       const pcm = await Engines.resample16k(rec.blob);
       const offset = chunkIndex * CHUNK_SEC;
@@ -1354,8 +1382,6 @@ const App = {
         if (this._chunkTimes.length > 5) this._chunkTimes.shift();
       }
     } catch(e){
-      const tiny = rec.blob && rec.blob.size < 12000;
-      if (tiny) return;
       this._consecFails = (this._consecFails||0) + 1;
       if (this._consecFails >= 3){
         const stop = confirm(`Transcription failed ${this._consecFails} times in a row.\n\nStop transcription? (Audio is saved)`);
@@ -1653,7 +1679,7 @@ function fmtClock(ts){ const d=new Date(ts);
 let currentReadId = null;
 
 async function renderList(){
-  const q = ($('searchInput').value||'').trim().toLowerCase();
+  const q = ($('searchInput').value||'').trim().toLowerCase().normalize('NFC');
   let items;
   try {
     items = await all('transcripts');
@@ -1664,8 +1690,8 @@ async function renderList(){
   }
   items.sort((a,b)=>b.startedAt-a.startedAt);
   if (q) items = items.filter(t =>
-    (t.title||'').toLowerCase().includes(q) ||
-    (t.segments||[]).some(s=>(s.text||'').toLowerCase().includes(q)));
+    (t.title||'').toLowerCase().normalize('NFC').includes(q) ||
+    (t.segments||[]).some(s=>(s.text||'').toLowerCase().normalize('NFC').includes(q)));
   let incompleteIds = new Set();
   try {
     const cps = await all('checkpoints');
@@ -1881,7 +1907,7 @@ async function init(){
       }
       const b = $('btnCopyTx'); const orig = b.textContent;
       b.textContent = 'Copied!'; setTimeout(()=>{ b.textContent = orig; }, 1500);
-    } catch(_){ alert('Copy failed.'); }
+    } catch(_){ alert('Copy failed. Try selecting the transcript text manually.'); }
   };
   $('btnDlTxt').onclick = async ()=>{
     const t = await get('transcripts', currentReadId); if(!t) return;
