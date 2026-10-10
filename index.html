@@ -168,6 +168,8 @@ label.lbl{display:block; font-size:var(--fs-sm); font-weight:700; margin:14px 0 
 .seg .ts{font-size:var(--fs-sm); color:var(--muted); cursor:pointer; text-decoration:underline;
   text-underline-offset:2px; background:none; border:none; padding:6px 4px; font-family:inherit; font-variant-numeric:tabular-nums}
 .seg .ts:disabled{color:var(--muted); opacity:.5; text-decoration:none; cursor:default}
+.seg .ts.playing{color:var(--accent); font-weight:700; text-decoration:none}
+.seg .ts.playing::before{content:'▶ '; font-size:11px}
 .seg .editbtn{font-size:var(--fs-sm); color:var(--muted); cursor:pointer; background:none; border:none;
   padding:8px 10px; margin-left:4px; border-radius:6px; transition:color .15s, background .15s}
 .seg .editbtn:hover{color:var(--accent); background:var(--bg)}
@@ -402,7 +404,6 @@ function filterHallucinations(segs){
     if (g.end != null && g.start != null && g.end <= g.start) continue;
     const n = normalizeText(g.text);
     if (!n) continue;
-    // filtering legitimate repetitions like "감사합니다 감사합니다".
     let isBoilerplate = b.has(n);
     if (!isBoilerplate){
       for (const bp of b){ if (bp && bp.length >= 12 && n.includes(bp)) { isBoilerplate = true; break; } }
@@ -492,7 +493,6 @@ function download(name, text, mime){
   a.download = name; document.body.appendChild(a); a.click();
   setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 4000);
 }
-// Same sanitization the Audio export already uses.
 function safeFilename(title, ext){
   const base = String(title||'meeting').replace(/[^\p{L}\p{N}\- ]+/gu,'').trim().slice(0,60) || 'meeting';
   return base + ext;
@@ -568,7 +568,6 @@ const AudioCap = {
       this.displayStream = null;
     }
     const sysTrack = (this.displayStream && this.displayStream.getAudioTracks()[0]) || null;
-    // 2) mic (self)
     this.micStream = await navigator.mediaDevices.getUserMedia({ audio:true });
     const micTrack = this.micStream.getAudioTracks()[0];
     if (!micTrack) throw new Error('mic-missing');
@@ -584,19 +583,16 @@ const AudioCap = {
     const sysSrc = sysTrack ? mkSrc(this.displayStream, sysTrack) : null;
     const micSrc = mkSrc(this.micStream, micTrack);
 
-    // analyser for level meters (pre-gain)
     const mkAn = src=>{ const an=this.ctx.createAnalyser(); an.fftSize=512; src.connect(an); return an; };
     if (sysSrc) this.analysers.sys = mkAn(sysSrc);
     this.analysers.mic = mkAn(micSrc);
 
-    // mix → MediaStreamDestination
     this.mixedDest = this.ctx.createMediaStreamDestination();
     const master = this.ctx.createGain(); master.gain.value = 1;
     if (sysSrc){ const g=this.ctx.createGain(); sysSrc.connect(g); g.connect(master); }
     { const g=this.ctx.createGain(); micSrc.connect(g); g.connect(master); }
     master.connect(this.mixedDest);
 
-    // track-loss detection
     const lost = ()=>{ this.onTrackLost && this.onTrackLost(); };
     if (this.displayStream) this.displayStream.getTracks().forEach(t=>{ t.onended=lost; t.onmute=lost; });
     this.micStream.getTracks().forEach(t=>{ t.onended=lost; });
@@ -657,7 +653,6 @@ const AudioCap = {
       const t = (Date.now()-this.recStart)/1000;
       const mR = this.analysers.mic ? rmsOf(this.analysers.mic) : 0;
       const sR = this.analysers.sys ? rmsOf(this.analysers.sys) : 0;
-      // per-second energy log (for speaker attribution)
       this.energy.mic.push({start:sec, end:sec+1, rms:mR});
       this.energy.sys.push({start:sec, end:sec+1, rms:sR});
       sec++;
@@ -815,7 +810,6 @@ const Engines = {
         catch(e){ done(rej, new Error('worker postMessage failed: '+String((e&&e.message)||e).slice(0,80))); }
       });
     }
-    // fallback: main thread (older browsers)
     const asr = await this.ensureWhisperMain();
     const out = await asr(pcm, { language, task:'transcribe', return_timestamps:true,
       chunk_length_s:30, stride_length_s:0, no_repeat_ngram_size:3, max_new_tokens:224, temperature:0.2 });
@@ -894,16 +888,11 @@ const Engines = {
     for (let s=0; s<pcm.length; s+=STEP) starts.push(s);
     let lang = this._sessionLang || null;
     if (!this._sessionLang){
-      // Pinned language from Settings skips auto-detection
       try {
         const lgSet = await get('settings','transcribeLang');
         const pinned = lgSet ? lgSet.v : 'auto';
         if (pinned && pinned !== 'auto'){
           lang = pinned;
-          // Only cache pinned languages — UAT-44: in 'auto' mode, let Whisper
-          // detect per chunk so mixed-language meetings (Korean sermon →
-          // English announcements) transcribe correctly instead of locking
-          // to the first chunk's language for the whole session.
           if (lang) this._sessionLang = lang;
         } else {
           lang = null; // Whisper auto-detects per chunk
@@ -930,7 +919,6 @@ const Engines = {
       _rawCount: segs.length, _filteredCount: filtered.length };
   }
 };
-// E2E test hook (read-only exposure, no sensitive data)
 window.Engines = Engines;
 
 /** Group words into segments (by punctuation / 12s / 25 words) */
@@ -969,7 +957,6 @@ const App = {
           this._bc.postMessage({ type:'recording-started', from:this._tabId });
         }
       };
-      // Ask if another tab is already recording
       this._bc.postMessage({ type:'ping-recording', from:this._tabId });
     } catch(_){}
   },
@@ -986,7 +973,6 @@ const App = {
           clearTimeout(timer);
           if (!lock){ done(false); return; }
           done(true);
-          // Hold the lock until _releaseRecordingLock runs at stop
           await new Promise(r=>{ this._lockRelease = r; });
         }).catch(()=>{ clearTimeout(timer); done(false); });
       } catch(_){ clearTimeout(timer); done(true); }
@@ -998,11 +984,9 @@ const App = {
 
   async startRecording(){
     hideBanner('permErr');
-    // recording would start with last session's error showing.
     try { $('trackLostWarn').classList.remove('show'); } catch(_){}
     if (this._starting) return;
     this._starting = true;
-    // auto-refresh would fire mid-recording).
     if (this._dlActive){
       this._starting = false;
       alert('A model download is in progress — please wait until it finishes to start recording.');
@@ -1025,7 +1009,6 @@ const App = {
         return;
       }
     }
-    // instead of waiting for a 77MB download mid-recording.
     Engines._recDlProg = null;
     Engines.onProgress = (eng, file, loaded, total)=>{
       try{ Engines._recDlProg = { loaded:loaded||0, total:total||0 }; }catch(_){}
@@ -1037,13 +1020,10 @@ const App = {
           if (!App.meeting || App.meeting.recovering) return;
           if (confirm('Transcription model failed to load. Recording will continue, but transcription may fail.\n\nSwitch to Standard (base) model? (80MB, downloads faster)')){
             Engines.whisperModel = 'Xenova/whisper-base';
-            // Save to settings
             put('settings',{k:'whisperModel', v:'Xenova/whisper-base'}).catch(()=>{});
             Engines.resetWhisperWorker();
-            // Update badge and model status note immediately
             try { if (typeof updateEngineBadge === 'function') updateEngineBadge(); } catch(_){}
             try { if (typeof updateModelStatusNote === 'function') updateModelStatusNote(); } catch(_){}
-            // Show feedback
             const tp = $('txProg');
             if (tp) tp.textContent = 'Switching to Standard (base) model… downloading…';
             Engines.ensureWhisperWorker().then(()=>{
@@ -1059,7 +1039,6 @@ const App = {
     }).catch(()=>{});
     Engines._sessionLang = null; // reset language cache for new session
     const topic = $('topicInput').value;
-    // 1) capture (permission popup)
     let cap;
     try { cap = await AudioCap.start(); }
     catch(e){
@@ -1084,7 +1063,6 @@ const App = {
       el.classList.add('show');
       return;
     }
-    // 2) create session
     const startedAt = new Date();
     this.meeting = {
       id: 'm'+Date.now().toString(36), topic: sanitizeTopic(topic),
@@ -1100,7 +1078,6 @@ const App = {
     this._quotaWarned = false; this._lastQuotaCheck = 0; // Round 2 #6: fresh quota state
     try { $('storageFullWarn').classList.remove('show'); } catch(_){}
 
-    // 3) wire callbacks
     AudioCap.onChunk = (blob, idx)=>this.onAudioChunk(blob, idx);
     AudioCap.onLevel = ({mic, sys})=>{
       $('mMic').style.width = Math.min(100, mic*400)+'%';
@@ -1112,11 +1089,8 @@ const App = {
       const silMin = this.silenceTimeoutMin || 10;
       if (silMin > 0 && !this.silenceWarned && Date.now()-this.lastSound > silMin*60*1000){
         this.silenceWarned = true;
-        // UAT-42: store as persistent message (appended in updateTxProg) instead of
-        // overwriting txProg — otherwise the next progress update erases the warning.
         this._silenceMsg = `⚠️ No sound for ${silMin} min — still recording. Stop manually if done.`;
       }
-      // auto-stop at 4 hours
       if (elapsed > 3.5*3600 && !this._fourHrWarned){
         this._fourHrWarned = true;
         this._fourHrMsg = '⚠️ Recording will auto-stop at 4 hours (30 min left). Stop and start a new recording to continue.';
@@ -1134,6 +1108,7 @@ const App = {
     const smr = $('sysMeterRow'); if (smr) smr.style.display = (cap && cap.micOnly) ? 'none' : '';
     const rl0 = $('recLabel'); if (rl0) rl0.textContent = 'Recording';
     const rd0 = $('recDot'); if (rd0){ rd0.style.animation=''; rd0.style.background=''; }
+    try { setRecordingFavicon(true); } catch(_){} // UAT-62: red dot on tab icon while recording
     const spw0 = $('saveProgWrap'); if (spw0) spw0.style.display='none';
     $('topicInput').value = '';
     window.onbeforeunload = ()=> 'Recording in progress. Closing this page will stop the recording.';
@@ -1150,6 +1125,7 @@ const App = {
       $('elapsed').textContent = fmt(e);
       const mm = Math.floor(e/60000), ss = Math.floor(e%60000/1000);
       $('recClock').textContent = pad2(mm)+':'+pad2(ss);
+      try { if (typeof App!=='undefined' && App.meeting) App._updateTabTitle(); } catch(_){}
     };
     upd(); AudioCap.elapsedTimer = setInterval(upd, 1000);
   },
@@ -1219,6 +1195,26 @@ const App = {
     try { this._wakeLock && this._wakeLock.release(); } catch(_){}
     this._wakeLock = null;
   },
+  /** UAT-61: keep tab title useful during long sessions. */
+  _updateTabTitle(){
+    try {
+      const base = 'Meeting Transcriber';
+      if (!this.meeting){ document.title = base; return; }
+      const m = this.meeting;
+      if (AudioCap.stopping || this._draining){
+        document.title = 'Finishing… — ' + base;
+      } else if (m.chunksTotal > 0 && m.chunksDone < m.chunksTotal){
+        document.title = `Transcribing ${m.chunksDone}/${m.chunksTotal} — ` + base;
+      } else if (m.recovering){
+        document.title = 'Recovering — ' + base;
+      } else {
+        const e = Date.now() - (AudioCap.recStart || Date.now());
+        const mm = String(Math.floor(e/60000)).padStart(2,'0');
+        const ss = String(Math.floor(e%60000/1000)).padStart(2,'0');
+        document.title = `● ${mm}:${ss} — ` + base;
+      }
+    } catch(_){}
+  },
   updateTxProg(){
     if (!this.meeting) return;
     if (!Engines.whisperWorkerReady && !Engines.whisperReady){
@@ -1237,7 +1233,6 @@ const App = {
     let txt;
     const mode = this.meeting.recovering ? 'Recovering' : 'Recording';
     if (this.meeting.chunksTotal === 0){
-      // Recording, no chunks finished yet (first 5 minutes)
       txt = this.meeting.recovering
         ? 'Recovering… preparing audio chunks'
         : 'Recording… background transcription starts after 5 minutes';
@@ -1278,6 +1273,7 @@ const App = {
         spw.style.display='none';
       }
     }
+    this._updateTabTitle();
   },
 
   async pumpQueue(){
@@ -1297,7 +1293,6 @@ const App = {
       while (this.queue.length){
         const job = this.queue.shift();
         await this.transcribeJob(job);
-        // UAT-36: re-check battery every 6 chunks (~30 min) — a 2-hour job can drain below 20% mid-run
         try {
           if (navigator.getBattery && this.meeting && (this.meeting.chunksDone % 6 === 0)){
             const b2 = await navigator.getBattery();
@@ -1402,8 +1397,6 @@ const App = {
         if (cp2){
           const errs = cp2.transcribeErrors || {};
           let msg = String((e && e.message) || e).slice(0,200);
-          // UAT-37: model-load failures need actionable guidance, not just the raw error.
-          // The fix is delete + re-download; tell the user exactly that.
           if (/model not initialized|worker.*failed|failed to load|corrupt|unexpected token|invalid/i.test(msg)){
             msg += ' — The model files may be corrupted. Go to Settings → Delete the model → Download it again.';
           }
@@ -1454,6 +1447,8 @@ const App = {
       const spw2 = $('saveProgWrap'); if (spw2) spw2.style.display='none';
       this.meeting = null;
       this._stopping = false; // UAT-9b: release re-entrancy guard
+      try { document.title = 'Meeting Transcriber'; } catch(_){} // UAT-61: reset tab title
+      try { setRecordingFavicon(false); } catch(_){} // UAT-62: restore normal favicon
       this._releaseRecordingLock(); // Round 2: release cross-tab exclusive lock
       this._broadcast('recording-stopped');
       window.onbeforeunload = null;
@@ -1498,7 +1493,6 @@ const App = {
       prevIdx = idx;
     }
     allSegs.sort((a,b)=>a.start-b.start);
-    // summary of engines used
     const engVals = Object.values(cp.enginesByChunk||{}).filter(e=>e && e!=='none');
     const errs = Object.values(cp.transcribeErrors||{});
     const engKeys = Object.keys(cp.enginesByChunk||{});
@@ -1594,7 +1588,6 @@ const App = {
     }
     const doneIdx = new Set(Object.keys(cp.segmentsByChunk||{}).map(Number));
     const missing = auds.filter(a=>!doneIdx.has(a.chunkIndex));
-    // misleading "Recovery done". Explain honestly instead.
     if (!missing.length){
       const errs = Object.values(cp.transcribeErrors||{}).map(String);
       const lostAudio = errs.some(e=>/could not be saved|deleted by retention/i.test(e));
@@ -1631,20 +1624,46 @@ const App = {
     }
   },
 
-  playSegmentAt(meetingId, absSec){
+  playSegmentAt(meetingId, absSec, btn){
+    if (btn && this._segBtn === btn && this.audioEl && !this.audioEl.paused){
+      this.stopSegAudio();
+      return;
+    }
     (async ()=>{
       const idx = Math.floor(absSec / CHUNK_SEC);
       const rec = await get('audio', [meetingId, idx]);
       if (!rec){ alert('The audio was deleted (retention policy). The transcript is kept.'); return; }
       if (this.audioEl) { this.audioEl.pause(); }
+      if (this._segBtn){ try{ this._segBtn.classList.remove('playing'); }catch(_){} }
       if (this._segUrl){ try{ URL.revokeObjectURL(this._segUrl); }catch(_){} this._segUrl = null; }
       const url = URL.createObjectURL(rec.blob);
       this._segUrl = url;
       this.audioEl = new Audio(url);
       this.audioEl.currentTime = Math.max(0, absSec - idx*CHUNK_SEC);
-      this.audioEl.onended = ()=>{ try{ URL.revokeObjectURL(url); }catch(_){} if (this._segUrl===url) this._segUrl = null; };
-      this.audioEl.play().catch(()=>{});
+      const done = ()=>{ try{ URL.revokeObjectURL(url); }catch(_){}
+        if (this._segUrl===url) this._segUrl = null;
+        if (btn){ try{ btn.classList.remove('playing'); btn.title='Listen to this segment'; }catch(_){} }
+        if (this._segBtn===btn) this._segBtn = null;
+      };
+      this.audioEl.onended = done;
+      this.audioEl.onpause = ()=>{ if (this.audioEl && this.audioEl.currentTime < this.audioEl.duration) done(); };
+      if (btn){ this._segBtn = btn; btn.classList.add('playing'); btn.title='Playing — tap to stop'; }
+      this.audioEl.play().catch(()=>{ done(); });
     })();
+  },
+
+  /** UAT-60: fully stop segment audio (pause + revoke URL + clear button). */
+  stopSegAudio(){
+    try {
+      if (this.audioEl){
+        this.audioEl.onended = null;
+        this.audioEl.onpause = null;
+        try { this.audioEl.pause(); } catch(_){}
+        this.audioEl = null;
+      }
+      if (this._segUrl){ try { URL.revokeObjectURL(this._segUrl); } catch(_){} this._segUrl = null; }
+      if (this._segBtn){ try { this._segBtn.classList.remove('playing'); this._segBtn.title='Listen to this segment'; } catch(_){} this._segBtn = null; }
+    } catch(_){}
   },
 };
 
@@ -1658,6 +1677,9 @@ function showScreen(id){
   document.querySelectorAll('.screen').forEach(s=>s.classList.toggle('active', s.id===id));
   window.scrollTo(0,0);
   try {
+    if (id !== 'scr-read' && typeof App !== 'undefined') App.stopSegAudio();
+  } catch(_){}
+  try {
     const rb = document.getElementById('recBanner');
     if (rb) {
       const show = App.meeting && id!=='scr-rec';
@@ -1670,6 +1692,34 @@ function showScreen(id){
   } catch(_){}
 }
 function hideBanner(id){ $(id).classList.remove('show'); }
+/** UAT-62: red-dot badge on tab icon while recording. */
+/** UAT-64: generation counter — if stop() runs before the icon image loads,
+    the stale onload must not re-apply the red dot. */
+let _faviconGen = 0;
+function setRecordingFavicon(on){
+  try {
+    const link = document.querySelector('link[rel="icon"]');
+    if (!link) return;
+    _faviconGen++;
+    const myGen = _faviconGen;
+    if (!on){ link.href = './icons/icon.svg'; return; }
+    const img = new Image();
+    img.onload = ()=>{
+      try {
+        if (myGen !== _faviconGen) return; // stopped before image loaded
+        const c = document.createElement('canvas'); c.width = c.height = 64;
+        const x = c.getContext('2d');
+        x.drawImage(img, 0, 0, 64, 64);
+        x.fillStyle = '#e02424';
+        x.beginPath(); x.arc(50, 14, 11, 0, 7); x.fill();
+        x.fillStyle = '#ffffff';
+        x.beginPath(); x.arc(50, 14, 4.5, 0, 7); x.fill();
+        link.href = c.toDataURL('image/png');
+      } catch(_){}
+    };
+    img.src = './icons/icon.svg';
+  } catch(_){}
+}
 function fmtDur(sec){ sec=Math.floor(sec);
   return pad2(Math.floor(sec/3600))+':'+pad2(Math.floor(sec%3600/60))+':'+pad2(sec%60); }
 function fmtClock(ts){ const d=new Date(ts);
@@ -1722,7 +1772,6 @@ async function renderList(){
       psub.textContent = `${m.chunksDone}/${m.chunksTotal} chunks · ${pct}%`;
       pinfo.append(ptitle, psub);
       prog.append(pinfo);
-      // Progress is already visible here on the list.
       if (!m.recovering){
         const back = document.createElement('button');
         back.className = 'btn btn-small'; back.type = 'button'; back.textContent = 'View';
@@ -1763,7 +1812,6 @@ async function renderList(){
       await del('checkpoints', t.id);
       renderList();
     };
-    // (nothing to retry when audio was silent).
     const hasFailed = t.note && t.note.trim().length > 0
       && !/silent/i.test(t.note);
     const isIncomplete = (t.chunksTotal||0) > (t.chunksDone||0) || incompleteIds.has(t.id);
@@ -1825,12 +1873,10 @@ async function openReader(id){
     const div = document.createElement('div'); div.className='seg';
     const spk = document.createElement('button');
     spk.type = 'button';
-    // UAT-57: old segments may lack speaker field — show 'Unknown', never 'undefined'
     const spkName = s.speaker || 'Unknown';
     spk.className = 'spk ' + (spkName==='Me'?'me':spkName==='Other'?'them':'unk');
     spk.textContent = spkName;
     spk.title = 'Tap to change speaker (Me / Other / Unknown)';
-    // UAT-54: speaker labels are heuristic-based and can be wrong — let user correct them
     spk.onclick = async ()=>{
       const order = ['Me','Other','Unknown'];
       const cur = s.speaker || 'Unknown';
@@ -1848,7 +1894,7 @@ async function openReader(id){
     ts.textContent = srtTimestamp(s.start).slice(0,8);
     ts.disabled = !hasAudio;
     ts.title = hasAudio ? 'Listen to this segment' : 'Audio deleted';
-    if (hasAudio) ts.onclick = ()=>App.playSegmentAt(id, s.start);
+    if (hasAudio) ts.onclick = ()=>App.playSegmentAt(id, s.start, ts);
     const tx = document.createElement('span'); tx.textContent = ' ' + s.text;
     const eb = document.createElement('button'); eb.className='editbtn'; eb.type='button';
     eb.textContent = '✎'; eb.title = 'Edit text';
@@ -1871,12 +1917,10 @@ async function openReader(id){
             tt.edits = tt.edits || {};
             tt.edits[s.start+'-'+s.end] = nt;
             await put('transcripts', tt);
-            // UAT-40: update in place instead of full re-render — preserves scroll position
             s.text = nt;
             tx.textContent = ' ' + nt;
           }
         }
-        // restore the normal segment view without rebuilding the whole list
         ta.remove(); row.remove();
         tx.style.display=''; eb.style.display='';
       };
@@ -1896,7 +1940,6 @@ function txtOf(t){
 }
 
 async function init(){
-  // screen switching
   const recoveringNow = ()=>{ try { return !!(App.meeting && App.meeting.recovering); } catch(_){ return false; } };
   $('brandHome').onclick = ()=>showScreen(recoveringNow() ? 'scr-list' : (App.meeting ? 'scr-rec' : 'scr-start'));
   $('recBanner').onclick = ()=>showScreen(recoveringNow() ? 'scr-list' : 'scr-rec');
@@ -1906,12 +1949,10 @@ async function init(){
   $('navList').onclick = ()=>{ showScreen('scr-list'); renderList(); };
   $('navSettings').onclick = ()=>showScreen('scr-settings');
   $('btnBack').onclick = ()=>{ showScreen('scr-list'); renderList(); };
-  // start/stop
   $('btnStart').onclick = ()=>App.startRecording();
   $('btnStop').onclick = ()=>App.stopRecording();
   let _searchT = 0;
   $('searchInput').oninput = ()=>{ clearTimeout(_searchT); _searchT = setTimeout(()=>renderList(), 200); };
-  // downloads
   $('btnCopyTx').onclick = async ()=>{
     try {
       const t = await get('transcripts', currentReadId);
@@ -1920,7 +1961,6 @@ async function init(){
       try {
         await navigator.clipboard.writeText(txt);
       } catch(_){
-        // UAT-41: clipboard API can fail (permissions, insecure context) — fallback to execCommand
         const ta = document.createElement('textarea');
         ta.value = txt; ta.style.position = 'fixed'; ta.style.opacity = '0';
         document.body.appendChild(ta); ta.select();
@@ -1940,8 +1980,6 @@ async function init(){
     const t = await get('transcripts', currentReadId); if(!t) return;
     download(safeFilename(t.title, '.srt'), toSRT(t.segments.map(s=>({start:s.start,end:s.end,text:`[${s.speaker || 'Unknown'}] ${s.text}`}))), 'text/plain;charset=utf-8');
   };
-  // UAT-55: native share sheet — fastest path to send transcript on mobile
-  // UAT-56: distinguish user dismissal (silent) from real share errors (fallback to clipboard)
   $('btnShareTx').onclick = async ()=>{
     const t = await get('transcripts', currentReadId); if(!t) return;
     const txt = typeof txtOf === 'function' ? txtOf(t) : t.segments.map(s=>s.text).join('\n');
@@ -1950,7 +1988,6 @@ async function init(){
         try {
           await navigator.clipboard.writeText(txt);
         } catch(_){
-          // UAT-58: clipboard API can fail (insecure context) — try execCommand before giving up
           const ta = document.createElement('textarea');
           ta.value = txt; ta.style.position = 'fixed'; ta.style.opacity = '0';
           document.body.appendChild(ta); ta.select();
@@ -1966,15 +2003,12 @@ async function init(){
         await navigator.share({ title: t.title, text: txt });
       } catch(e){
         if (e && e.name === 'AbortError') return; // user dismissed the share sheet — silent
-        // Real error (e.g. text too long, not allowed) — fall back to clipboard
         await copyFallback('Sharing failed — transcript copied to clipboard instead.');
       }
     } else {
-      // Desktop fallback: copy to clipboard
       await copyFallback('Share is not supported on this device — transcript copied to clipboard instead.');
     }
   };
-  // settings
   const st = await get('settings','audioPolicy');
   $('audioPolicy').value = st ? st.v : '3days';
   const th = await get('settings','theme');
@@ -1999,7 +2033,6 @@ async function init(){
       const cached = await isModelCached(m.id);
       const el = document.getElementById('mstat-'+m.id.replace(/[^a-z0-9]/gi,''));
       if (!el) continue;
-      // partial cache masquerade as "✓ Downloaded".
       let incomplete = false;
       try {
         const key = m.id.replace(/[^a-z0-9]/gi,'');
@@ -2010,7 +2043,6 @@ async function init(){
     }
   }
   async function isModelCached(modelId){
-    // most reliable signal. Cache URL matching is a fallback.
     try{
       const key = modelId.replace(/[^a-z0-9]/gi,'');
       const st = localStorage.getItem('mt_dl_'+key);
@@ -2035,7 +2067,6 @@ async function init(){
     try{
       const c = await caches.open('meeting-transcriber-whisper');
       const keys = await c.keys();
-      // even when URL structure varies.
       const marker = modelId.includes('turbo') ? 'turbo'
         : modelId.includes('whisper-small') ? 'whisper-small'
         : modelId.includes('whisper-base') ? 'whisper-base'
@@ -2085,21 +2116,18 @@ async function init(){
         } else {
         dl.textContent = 'Download';
         dl.onclick = async ()=>{
-          // never do that while a transcription is running.
           if (App.processing || (App.queue && App.queue.length) ||
               (App.meeting && !App.meeting.recovering)){
             alert('A recording or transcription is in progress — please wait until it finishes to download models.');
             return;
           }
           const key = m.id.replace(/[^a-z0-9]/gi,'');
-          // must NOT block — only an actually-running download does.
           if (App._dlActive){
             if (App._dlActive === key) renderModelList(); // refresh to proper Downloading… state
             else alert('A model download is in progress — please wait until it finishes.');
             return;
           }
           App._dlActive = key;
-          // Mark as downloading (to detect incomplete on refresh)
           try { localStorage.setItem('mt_dl_'+key, 'downloading'); } catch(_){}
           const statEl = document.getElementById('mstat-'+key);
           const progEl = document.getElementById('mprog-'+key);
@@ -2124,7 +2152,6 @@ async function init(){
             if (bar && total) bar.style.width = Math.round(loaded/total*100)+'%';
             if (statEl && total) statEl.textContent = `Downloading… ${Math.round(loaded/1048576)}MB / ${Math.round(total/1048576)}MB`;
           };
-          // Temporarily set model to download it
           const prevModel = Engines.whisperModel;
           try{
             Engines.whisperModel = m.id;
@@ -2134,13 +2161,11 @@ async function init(){
             if (!w) throw new Error('Model failed to load');
             try { localStorage.setItem('mt_dl_'+key, 'done'); } catch(_){}
             if (statEl) statEl.textContent = '✓ Downloaded';
-            // A1: also skip if a recording/recovery session is active.
             setTimeout(()=>{ try{ if (typeof App!=='undefined' && (App._dlActive || App.meeting || App._starting)) return; }catch(_){} window.location.reload(); }, 1000);
           }catch(e){
             try { localStorage.removeItem('mt_dl_'+key); } catch(_){}
             if (cancelled){
               if (statEl) statEl.textContent = 'Download cancelled';
-              // Clean up partial download
               try { await deleteModelCache(m.id); } catch(_){}
             } else {
               if (statEl) statEl.textContent = 'Download failed: ' + String((e&&e.message)||e).slice(0,60);
@@ -2164,8 +2189,6 @@ async function init(){
         del.className = 'btn btn-ghost btn-small'; del.textContent = 'Delete';
         del.style.marginLeft = '4px';
         del.onclick = async ()=>{
-          // to "no model downloaded" and confuse the user).
-          // download completes, violating the user's delete intent.
           if ((typeof App !== 'undefined') && (App.processing || (App.queue && App.queue.length) ||
               (App.meeting && !App.meeting.recovering) || App._dlActive)){
             alert('A recording, transcription, or download is in progress — please wait until it finishes to delete models.');
@@ -2190,19 +2213,16 @@ async function init(){
       renderModelList(); // restore radio to the active model
       return;
     }
-    // in the middle of the user's recording.
     if (App.meeting && !App.meeting.recovering && Engines.whisperModel !== modelId){
       alert('A recording is in progress — please wait until it finishes to switch models.');
       renderModelList(); // restore radio to the active model
       return;
     }
-    // refreshed mid-download) must not block the user forever.
     if (App._dlActive){
       alert('A model download is in progress — please wait until it finishes.');
       renderModelList(); // restore radio
       return;
     }
-    // used to briefly show the new model name).
     try { if (typeof updateInstrModelName === 'function') updateInstrModelName(); } catch(_){}
     try { if (typeof updateModelStatusNote === 'function') updateModelStatusNote(); } catch(_){}
     Engines.whisperModel = modelId;
@@ -2213,7 +2233,6 @@ async function init(){
     const cached = await isModelCached(modelId);
     if (Engines.whisperModel !== modelId) return; // superseded by a newer tap
     if (!cached){
-      // Download now with progress
       const key = modelId.replace(/[^a-z0-9]/gi,'');
       const statEl = document.getElementById('mstat-'+key);
       const progEl = document.getElementById('mprog-'+key);
@@ -2249,7 +2268,6 @@ async function init(){
         if (!w) throw new Error('Model failed to load');
         try { localStorage.setItem('mt_dl_'+key, 'done'); } catch(_){}
         if (statEl) statEl.textContent = '✓ Downloaded';
-        // A1: also skip if a recording/recovery session is active.
         setTimeout(()=>{ try{ if (typeof App!=='undefined' && (App._dlActive || App.meeting || App._starting)) return; }catch(_){} window.location.reload(); }, 1000);
       }catch(e){
         try { localStorage.removeItem('mt_dl_'+key); } catch(_){}
@@ -2327,7 +2345,6 @@ async function init(){
   }
   window.updateStorageInfo = updateStorageInfo;
   $('btnRefreshStorage').onclick = updateStorageInfo;
-  // banner points here, but there was no way to free space.
   $('btnFreeAudio').onclick = async ()=>{
     const auds = await all('audio');
     if (!auds.length){ alert('No recordings stored.'); return; }
@@ -2353,7 +2370,6 @@ async function init(){
     alert('Recordings deleted. Transcripts kept.');
   };
   updateStorageInfo();
-  // Engine badge on main header (backend + model)
   updateEngineBadge = async function(){
     const b = $('engineBadge');
     if (!b) return;
@@ -2374,12 +2390,10 @@ async function init(){
       : mid.includes('tiny') ? 'tiny' : mid.includes('base') ? 'base'
       : mid.includes('small') ? 'small' : mid.includes('medium') ? 'medium'
       : mid.includes('large') ? 'large' : '';
-    // Model short name
     const mid = (Engines && Engines.whisperModel) || '';
     const mshort = shortOf(mid);
     const ashort = shortOf(activeModel);
     const fellBack = ashort && mshort && ashort !== mshort;
-    // Check if selected model is downloaded
     let downloaded = true;
     try {
       if (mid && typeof isModelCached === 'function'){
@@ -2412,7 +2426,6 @@ async function init(){
     } catch(_){}
   }
   updateInstrModelName();
-  // Model status below record button
   updateModelStatusNote = async function(){
     const el = $('modelStatusNote');
     if (!el) return;
@@ -2481,7 +2494,6 @@ async function init(){
       });
     }).catch(()=>{});
   })();
-  // WebGPU + device memory status
   (async ()=>{
     const wg = $('webgpuStatus'), dm = $('deviceMemStatus');
     try {
@@ -2516,7 +2528,6 @@ async function init(){
     try{ localStorage.removeItem('mt_model_parakeet'); }catch(_){}
   })();
   await App.checkRecovery();
-  // not when recording/transcribing is progressing fine.
   (()=>{
     let hiddenAt = 0;
     let queueLenAtHide = 0;
@@ -2535,7 +2546,6 @@ async function init(){
           let queueNow = 0;
           try { queueNow = (App.queue && App.queue.length) || 0; } catch(_){}
           const progressed = queueNow < queueLenAtHide;
-          // only warn if queue grew unbounded (sign of stall)
           const recording = !!App.meeting;
           const stalled = recording ? (queueNow > queueLenAtHide + 5) : !progressed;
           if (!stalled) return;
@@ -2551,11 +2561,9 @@ async function init(){
       } // end E1 outer else (visible)
     });
   })();
-  // request storage persistence (prevent eviction)
   if (navigator.storage && navigator.storage.persist){
     try{ await navigator.storage.persist(); }catch(_){}
   }
-  // what we need.
   window.addEventListener('storage', (e)=>{
     try {
       if (e.key && e.key.indexOf('mt_dl_') === 0){
@@ -2569,8 +2577,6 @@ async function init(){
 
 document.addEventListener('DOMContentLoaded', ()=>{
   init().catch((e)=>{
-    // UAT-43: IndexedDB blocked/corrupted → init() throws, leaving dead buttons
-    // with no explanation. Show an honest error instead.
     try {
       const msg = 'Could not open local storage (IndexedDB): ' + String((e && e.message) || e).slice(0, 200) +
         '\n\nThe app needs browser storage to save transcripts. Try:\n' +
